@@ -1,5 +1,7 @@
 # LAB-1: 机器启动实验报告
 
+代码链接：https://github.com/WHUer1688/riscv-os-lab/tree/Lab-1
+
 ## 1. 系统设计部分
 
 ### 1.1 架构设计说明
@@ -252,5 +254,6 @@ void spinlock_acquire(spinlock_t *lk) {
 
 #### 3.4.2 并行计算测试截图
 ![并行加法](picture/calculate_test.png)
+
 
 
