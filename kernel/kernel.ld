@@ -39,4 +39,7 @@ SECTIONS
   }
 
   PROVIDE(end = .);
+  PROVIDE(etext = .);
+  PROVIDE(edata = .);
+  PROVIDE(ebss = .);
 }

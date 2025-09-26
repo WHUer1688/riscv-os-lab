@@ -22,4 +22,7 @@ typedef enum {false = 0, true = 1} bool;
 
 #define NCPU 3
 
+// 页大小定义
+#define PGSIZE 4096
+
 #endif
