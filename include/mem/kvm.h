@@ -29,6 +29,7 @@ typedef uint64* pgtbl_t;
 
 // 最大虚拟地址
 #define MAXVA (1L << (9 + 9 + 9 + 12 - 1))
+#define VA_MAX MAXVA
 
 // 虚拟内存管理函数
 pte_t *vm_getpte(pgtbl_t pgtbl, uint64 va, bool alloc);

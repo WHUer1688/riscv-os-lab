@@ -24,4 +24,9 @@ void pmem_init(void);
 void* pmem_alloc(bool in_kernel);
 void pmem_free(void* pa, bool in_kernel);
 
+// 引用计数管理函数
+void pmem_incref(void* pa);
+void pmem_decref(void* pa, bool in_kernel);
+uint32 pmem_getref(void* pa);
+
 #endif
