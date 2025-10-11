@@ -390,7 +390,7 @@ void vm_mappages(pgtbl_t pgtbl, uint64 va, uint64 pa, uint64 len, int perm) {
 
 **测试结果**:
 
-![启动测试](picture/start_test.png)
+![启动测试](picture/lab2_test1.png)
 
 **结论**: 所有三个CPU成功启动，内存管理模块正常初始化。
 
@@ -399,4 +399,4 @@ void vm_mappages(pgtbl_t pgtbl, uint64 va, uint64 pa, uint64 len, int perm) {
 
 **测试结果**:
 
-![启动测试](picture/start_test.png)
+![启动测试](picture/lab2_test2.png)
