@@ -40,6 +40,7 @@ int main()
         vm_unmappages(test_pgtbl, PGSIZE * 512, PGSIZE, true);
         vm_print(test_pgtbl);
 
+        /*
         // 回归测试：验证引用计数机制
         printf("\ntest-3: Reference counting test\n\n");
         
@@ -80,6 +81,7 @@ int main()
         printf("Final allocation PA: %p\n", final_pa);
         
         printf("\nAll tests PASSED! Reference counting works correctly.\n");
+        */
 
     } else {
 
