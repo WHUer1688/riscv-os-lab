@@ -8,7 +8,7 @@ KERNEL_LD  = kernel.ld
 .PHONY: build clean $(MOUDLES) 
 
 $(MOUDLES):
-	$(MAKE) build --directory=$@
+	$(MAKE) build INTERVAL=$(INTERVAL) --directory=$@
 
 $(KERNEL_ELF): $(MODULES) $(KERNEL_LD)
 	$(LD) $(LDFLAGS) -T $(KERNEL_LD) -o $(KERNEL_ELF) $(OBJS)

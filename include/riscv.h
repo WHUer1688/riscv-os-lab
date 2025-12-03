@@ -1,3 +1,6 @@
+#ifndef __RISCV_H__
+#define __RISCV_H__
+
 #include "common.h"
 
 // 获取当前CPU的hartid
@@ -67,6 +70,11 @@ static inline void w_sip(uint64 x)
 {
   asm volatile("csrw sip, %0" : : "r" (x));
 }
+
+// Supervisor Interrupt Pending
+#define SIP_SSIP (1L << 1) // software
+#define SIP_STIP (1L << 5) // timer
+#define SIP_SEIP (1L << 9) // external
 
 // Supervisor Interrupt Enable
 #define SIE_SEIE (1L << 9) // external
@@ -301,3 +309,5 @@ static inline void w_pmpcfg0(uint64 x)
 {
     asm volatile("csrw pmpcfg0, %0" : : "r" (x));
 }
+
+#endif // __RISCV_H__

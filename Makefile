@@ -4,11 +4,12 @@ KERN = kernel
 KERNEL_ELF = kernel-qemu
 CPUNUM = 3
 FS_IMG = none
+INTERVAL ?= 1000000
 
 .PHONY: clean $(KERN)
 
 $(KERN):
-	$(MAKE) build --directory=$@
+	$(MAKE) build INTERVAL=$(INTERVAL) --directory=$@
 
 # QEMU相关配置
 QEMU     =  qemu-system-riscv64

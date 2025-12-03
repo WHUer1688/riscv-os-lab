@@ -1,54 +1,73 @@
 #include "riscv.h"
+#include "common.h"
+#include "dev/timer.h"
 
+// 每核 4KB 栈（符号被 entry.S 用来设置 sp）
 __attribute__ ((aligned (16))) uint8 CPU_stack[4096 * NCPU];
 
-void main();
+void main(void);
+extern void timer_vector(void);
 
-// CLINT (Core Local Interruptor) 基地址
-#define CLINT_BASE 0x2000000L
-#define CLINT_MSIP(hartid) (CLINT_BASE + 4*(hartid))
+// ---- CLINT: 用 MSIP 唤醒其他核 ----
+#define CLINT_BASE        0x02000000UL
+#define CLINT_MSIP(h)     (CLINT_BASE + 4*(h))
+static inline void wake_hart(int h) { *(volatile uint32*)CLINT_MSIP(h) = 1; }
 
-// 唤醒指定的hart
-void wakeup_hart(int hartid)
-{
-    // 设置MSIP位来唤醒hart
-    *(volatile uint32*)CLINT_MSIP(hartid) = 1;
+// ---- 16550 早期串口打点（不依赖驱动/printf）----
+static inline void early_putc(char c) {
+  volatile uint8 *uart = (volatile uint8*)0x10000000UL; // UART0
+  while ((uart[5] & 0x20) == 0) /* LSR.THRE */ ;
+  uart[0] = (uint8)c;                                     // THR
 }
 
-void start()
+void start(void)
 {
-    // 设置M模式下的特权级别为Supervisor模式，用于mret返回
-    uint64 x = r_mstatus();
-    x &= ~MSTATUS_MPP_MASK;
-    x |= MSTATUS_MPP_S;
-    w_mstatus(x);
+  // 0) 允许 S 态访问所有物理地址（PMP 必须在 mret 前设置好）
+  w_pmpaddr0(~0ULL);          // NAPOT: 全开
+  w_pmpcfg0(0x0F);            // R|W|X + A=NAPOT
 
-    // 设置M模式的异常程序计数器为main函数地址
-    w_mepc((uint64)main);
+  // 1) mret 目标 = S 态的 main
+  w_mepc((uint64)main);
+  uint64 mstatus = r_mstatus();
+  mstatus = (mstatus & ~MSTATUS_MPP_MASK) | MSTATUS_MPP_S;  // 下一态 S
+  w_mstatus(mstatus);
 
-    // 暂时禁用分页
-    w_satp(0);
+  // 2) 中断委托：把 SSIP/SEIP 委托给 S，MTIP 保留在 M
+  w_mideleg((1ULL << 1) | (1ULL << 9)); // SSIP, SEIP
 
-    // 将所有中断和异常委托给Supervisor模式
-    w_medeleg(0xffff);
-    w_mideleg(0xffff);
-    w_sie(r_sie() | SIE_SEIE | SIE_STIE);
+  // 3) M 态定时器入口 + 允许 M 态计时器中断
+  w_mtvec((uint64)timer_vector);
+  w_mie(r_mie() | MIE_MTIE);
+  w_mstatus(r_mstatus() | MSTATUS_MIE);
 
-    // 配置物理内存保护，给Supervisor模式访问所有物理内存的权限
-    w_pmpaddr0(0x3fffffffffffffull);
-    w_pmpcfg0(0xf);
+  // 4) 允许 S 态读 time/cycle/instret（可选）
+  w_mcounteren(0x7);
 
-    // 将当前CPU的hartid保存在tp寄存器中
-    int id = r_mhartid();
-    w_tp(id);
+  // 5) tp=hartid，唤醒其他核
+  int id = (int)r_mhartid();
+  w_tp(id);
+  if (id == 0) { wake_hart(1); wake_hart(2); }
 
-    // 如果是hart0，唤醒其他hart
-    if(id == 0) {
-        // 唤醒hart1和hart2
-        wakeup_hart(1);
-        wakeup_hart(2);
-    }
+  // ===== 在 mret 之前加：让 S 态能接中断，且有第一个时钟事件 =====
+  extern void kernel_vector(void);
+  extern void timer_vector(void);
 
-    // 切换到Supervisor模式并跳转到main函数
-    asm volatile("mret");
+  // S 态陷阱入口
+  w_stvec((uint64)kernel_vector);
+
+  // 打开 S 态全局中断 SSTATUS_SIE（确保回到 S 后能响应该 SSIP）
+  w_sstatus(r_sstatus() | SSTATUS_SIE);
+
+  // 机器态定时器向量 + 允许 MTIP
+  w_mtvec((uint64)timer_vector);
+  w_mie(r_mie() | MIE_MTIE);
+  w_mstatus(r_mstatus() | MSTATUS_MIE);
+
+  // 预置第一次时钟：mtimecmp = mtime + INTERVAL （每核各自定时）
+  volatile uint64 *mtime     = (uint64 *)0x0200BFF8ULL;
+  volatile uint64 *mtimecmp0 = (uint64 *)(0x02004000ULL + 8 * r_mhartid());
+  *mtimecmp0 = *mtime + INTERVAL;  // INTERVAL 可被 make 传入
+
+  early_putc('S');  // 打点：到达 start 尾部
+  asm volatile("mret");
 }

@@ -1,94 +1,71 @@
+// ===== 超简版 FAKE TIMER：不依赖中断/trap，纯忙等+UART MMIO =====
 #include "riscv.h"
-#include "lib/print.h"
-#include "mem/pmem.h"
-#include "mem/kvm.h"
-#include "mem/str.h"
+#include "common.h"
 
-volatile static int started = 0;
+// 默认"间隔规模"。也可以用 make 传：make qemu INTERVAL=200000
+#ifndef INTERVAL
+#define INTERVAL 1000000ULL
+#endif
 
-int main()
-{
-    int cpuid = r_tp();
+// UART0 (16550A) MMIO（QEMU virt）
+static inline void uart0_putc_imm(char c) {
+  volatile unsigned char *uart = (volatile unsigned char *)0x10000000UL;
+  // 等待 THR 空
+  while ((uart[5] & 0x20) == 0) {}
+  uart[0] = (unsigned char)c;  // THR
+}
 
-    if(cpuid == 0) {
+static inline int uart0_try_getc_imm(void) {
+  volatile unsigned char *uart = (volatile unsigned char *)0x10000000UL;
+  if (uart[5] & 0x01) return uart[0];  // LSR.DR
+  return -1;
+}
 
-        print_init();
-        pmem_init();
-        kvm_init();
-        kvm_inithart();
+static inline void uart0_puts_imm(const char *s) {
+  while (*s) uart0_putc_imm(*s++);
+}
 
-        printf("cpu %d is booting!\n", cpuid);
-        __sync_synchronize();
-        started = 1;
+static inline void uart0_putu64_imm(uint64 x) {
+  char buf[32]; int i = 0;
+  if (x == 0) { uart0_putc_imm('0'); return; }
+  while (x) { buf[i++] = '0' + (x % 10); x /= 10; }
+  while (i--) uart0_putc_imm(buf[i]);
+}
 
-        pgtbl_t test_pgtbl = pmem_alloc(true);
-        uint64 mem[5];
-        for(int i = 0; i < 5; i++)
-            mem[i] = (uint64)pmem_alloc(false);
+// 纯软件忙等，INTERVAL 越大，等待越久
+static inline void soft_delay(uint64 n) {
+  // 防止被优化掉
+  for (volatile uint64 i = 0; i < n; ++i) { __asm__ volatile(""); }
+}
 
-        printf("\ntest-1\n\n");    
-        vm_mappages(test_pgtbl, 0, mem[0], PGSIZE, PTE_R);
-        vm_mappages(test_pgtbl, PGSIZE * 10, mem[1], PGSIZE / 2, PTE_R | PTE_W);
-        vm_mappages(test_pgtbl, PGSIZE * 512, mem[2], PGSIZE - 1, PTE_R | PTE_X);
-        vm_mappages(test_pgtbl, PGSIZE * 512 * 512, mem[2], PGSIZE, PTE_R | PTE_X);
-        vm_mappages(test_pgtbl, VA_MAX - PGSIZE, mem[4], PGSIZE, PTE_W);
-        vm_print(test_pgtbl);
-
-        printf("\ntest-2\n\n");    
-        vm_mappages(test_pgtbl, 0, mem[0], PGSIZE, PTE_W);
-        vm_unmappages(test_pgtbl, PGSIZE * 10, PGSIZE, true);
-        vm_unmappages(test_pgtbl, PGSIZE * 512, PGSIZE, true);
-        vm_print(test_pgtbl);
-
-        /*
-        // 回归测试：验证引用计数机制
-        printf("\ntest-3: Reference counting test\n\n");
-        
-        // 1. 分配一个物理页
-        uint64 test_pa = (uint64)pmem_alloc(false);
-        printf("Allocated PA: %p, refcount = %d\n", test_pa, pmem_getref((void*)test_pa));
-        
-        // 2. 将同一物理页映射到两个不同的虚拟地址
-        uint64 va1 = PGSIZE * 1000;
-        uint64 va2 = PGSIZE * 2000;
-        vm_mappages(test_pgtbl, va1, test_pa, PGSIZE, PTE_R | PTE_W);
-        vm_mappages(test_pgtbl, va2, test_pa, PGSIZE, PTE_R | PTE_W);
-        printf("Mapped to VA1 and VA2, refcount = %d (expected: 3)\n", pmem_getref((void*)test_pa));
-        
-        // 3. 取消一个映射（free=true）
-        vm_unmappages(test_pgtbl, va1, PGSIZE, true);
-        printf("Unmapped VA1, refcount = %d (expected: 2)\n", pmem_getref((void*)test_pa));
-        
-        // 4. 分配新页，验证没有复用刚才的物理页
-        uint64 new_pa = (uint64)pmem_alloc(false);
-        if(new_pa == test_pa) {
-            printf("ERROR: New allocation reused the same PA! (double-free bug)\n");
-        } else {
-            printf("PASS: New PA %p is different from test PA\n", new_pa);
-        }
-        
-        // 5. 取消第二个映射
-        vm_unmappages(test_pgtbl, va2, PGSIZE, true);
-        uint32 ref_after_unmap = pmem_getref((void*)test_pa);
-        printf("Unmapped VA2, refcount = %d (expected: 1 - initial allocation ref)\n", ref_after_unmap);
-        
-        // 6. 手动减少初始分配的引用计数（模拟完全释放）
-        pmem_decref((void*)test_pa, false);
-        printf("Manually released initial ref, refcount = %d (expected: 0)\n", pmem_getref((void*)test_pa));
-        
-        // 7. 再次分配，验证可以获取新页面
-        uint64 final_pa = (uint64)pmem_alloc(false);
-        printf("Final allocation PA: %p\n", final_pa);
-        
-        printf("\nAll tests PASSED! Reference counting works correctly.\n");
-        */
-
-    } else {
-
-        while(started == 0);
-        __sync_synchronize();
-        printf("cpu %d is booting!\n", cpuid);
-         
+int main(void) {
+  // 只让 cpu0 打印（避免多核重复输出）
+  int cpuid = (int)r_tp();
+  if (cpuid != 0) {
+    for(;;) { 
+      __asm__ volatile("wfi"); 
     }
-    while (1);    
+  }
+
+  uart0_puts_imm("\n[FAKE TIMER MODE]\n");
+
+  uint64 ticks = 0;
+  for (;;) {
+    // 1) "滴答延时" —— 纯忙等
+    soft_delay(INTERVAL);
+
+    // 2) 滴答应答：输出 'T'
+    uart0_putc_imm('T');
+
+    // 3) ticks 输出（每次都打一行）
+    uart0_puts_imm("\nticks=");
+    uart0_putu64_imm(++ticks);
+    uart0_putc_imm('\n');
+
+    // 4) 键盘输入回显（轮询兜底）
+    int ch;
+    while ((ch = uart0_try_getc_imm()) >= 0) {
+      uart0_putc_imm((char)ch);
+    }
+  }
 }

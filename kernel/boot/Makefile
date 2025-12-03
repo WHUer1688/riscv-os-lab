@@ -9,6 +9,9 @@ target = $(shell ls *.c *.S 2>/dev/null | awk '{gsub(/\.c|\.S/, ".o"); print $0}
 # 定义了一些通用操作和参数
 include ../../common.mk
 
+# 传递 INTERVAL 参数
+CFLAGS += -DINTERVAL=$(INTERVAL)
+
 %.o: %.S
 	$(CC) $(CFLAGS) -I $(INLCUDES) -c $<
 

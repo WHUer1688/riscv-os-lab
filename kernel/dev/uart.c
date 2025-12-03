@@ -61,8 +61,9 @@ void uart_putc_sync(int c)
 
   while(panicked);
 
-  // 等待TX队列进入idle状态
-  while((ReadReg(LSR) & LSR_TX_IDLE) == 0);
+  // 等待TX队列进入idle状态（添加超时保护）
+  int timeout = 100000;
+  while((ReadReg(LSR) & LSR_TX_IDLE) == 0 && --timeout > 0);
   
   // 输出
   WriteReg(THR, c);
@@ -90,4 +91,12 @@ void uart_intr(void)
     if(c == -1) break;
     uart_putc_sync(c);
   }
+}
+
+// 非阻塞读取一个字符（有就返回 0..255，没就返回 -1）
+int uart_try_getc(void) {
+  volatile uint8 *uart = (volatile uint8*)0x10000000UL;
+  // LSR bit0 = Data Ready
+  if (uart[5] & 0x01) return uart[0];
+  return -1;
 }

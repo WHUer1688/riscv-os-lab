@@ -7,5 +7,6 @@ void uart_init(void);
 void uart_putc_sync(int c);
 int  uart_getc_sync(void);
 void uart_intr(void);
+int  uart_try_getc(void);
 
 #endif
