@@ -93,14 +93,14 @@ fake_timer_loop:
     li   a0, '\n'
     call putc_imm
     
-    # 6) 轮询键盘：有就回显（保证"UART 输入响应测试"也能过）
+    # 6) 轮询并回显：把 RX FIFO 里所有字节都刷出来
     li   t0, UART0
-    lb   t1, UART_LSR(t0)
-    andi t1, t1, UART_LSR_DR
+1:  lb   t1, UART_LSR(t0)
+    andi t1, t1, UART_LSR_DR     # Data Ready?
     beqz t1, .Lloop
-    lb   a0, UART_THR(t0)      # 读 RBR（偏移 0）
+    lb   a0, 0(t0)               # RBR 在偏移 0
     call putc_imm
-    j    .Lloop
+    j    1b
 
 .Lidle:
     wfi
