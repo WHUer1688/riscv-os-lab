@@ -22,8 +22,21 @@ _entry:
         sb   t0, 0(t1)          # 写 THR (offset 0)
         # ----------------------------------------------
         
+        # 初始化.bss段（清零全局未初始化变量）
+        # 只让CPU0初始化.bss
+        csrr a0, mhartid
+        bnez a0, skip_bss_init
+        la   t0, sbss
+        la   t1, ebss
+bss_loop:
+        beq  t0, t1, bss_done
+        sd   zero, 0(t0)
+        addi t0, t0, 8
+        j    bss_loop
+bss_done:
+skip_bss_init:
+        
         # 跳转到start
-        call fake_timer_loop   # 斜招：直接进入假计时器，不再返回
         call start
 spin:
         j spin

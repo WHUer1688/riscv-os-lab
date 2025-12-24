@@ -8,13 +8,15 @@ SECTIONS
   .text : {
     *(.text .text.*)
     . = ALIGN(0x1000);
-    /*
-    _trampoline = .;
+    PROVIDE(etext = .);
+  }
+
+  . = ALIGN(0x1000);
+  .trampoline : {
+    PROVIDE(_trampoline = .);
     *(trampsec)
     . = ALIGN(0x1000);
     ASSERT(. - _trampoline == 0x1000, "error: trampoline larger than one page");
-    */
-    PROVIDE(etext = .);
   }
 
   .rodata : {
@@ -33,13 +35,14 @@ SECTIONS
 
   .bss : {
     . = ALIGN(16);
+    PROVIDE(sbss = .);
     *(.sbss .sbss.*) /* do not need to distinguish this from .bss */
     . = ALIGN(16);
     *(.bss .bss.*)
+    PROVIDE(ebss = .);
   }
 
   PROVIDE(end = .);
   PROVIDE(etext = .);
   PROVIDE(edata = .);
-  PROVIDE(ebss = .);
 }

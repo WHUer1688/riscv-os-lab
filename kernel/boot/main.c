@@ -1,6 +1,11 @@
-// ===== 超简版 FAKE TIMER：不依赖中断/trap，纯忙等+UART MMIO =====
+// ===== Lab4: 创建proczero并切换到用户态 =====
 #include "riscv.h"
 #include "common.h"
+#include "mem/pmem.h"
+#include "mem/kvm.h"
+#include "trap.h"
+#include "proc/proc.h"
+#include "lib/print.h"
 
 // 默认"间隔规模"。也可以用 make 传：make qemu INTERVAL=200000
 #ifndef INTERVAL
@@ -39,33 +44,37 @@ static inline void soft_delay(uint64 n) {
 }
 
 int main(void) {
-  // 只让 cpu0 打印（避免多核重复输出）
   int cpuid = (int)r_tp();
+  
+  // 只让CPU0进行初始化
+  if (cpuid == 0) {
+    // 初始化物理内存管理
+    pmem_init();
+    
+    // 初始化内核页表
+    kvm_init();
+    
+    // 初始化trap
+    trap_kernel_init();
+  }
+  
+  // 每个CPU初始化自己的页表和trap
+  kvm_inithart();
+  trap_kernel_inithart();
+  
+  // 其他CPU在main末尾死循环
   if (cpuid != 0) {
     for(;;) { 
       __asm__ volatile("wfi"); 
     }
   }
-
-  uart0_puts_imm("\n[FAKE TIMER MODE]\n");
-
-  uint64 ticks = 0;
-  for (;;) {
-    // 1) "滴答延时" —— 纯忙等
-    soft_delay(INTERVAL);
-
-    // 2) 滴答应答：输出 'T'
-    uart0_putc_imm('T');
-
-    // 3) ticks 输出（每次都打一行）
-    uart0_puts_imm("\nticks=");
-    uart0_putu64_imm(++ticks);
-    uart0_putc_imm('\n');
-
-    // 4) 键盘输入回显（轮询兜底）
-    int ch;
-    while ((ch = uart0_try_getc_imm()) >= 0) {
-      uart0_putc_imm((char)ch);
-    }
+  
+  // CPU0创建proczero并切换到用户态
+  // proc_make_first会切换到proczero，不会返回
+  proc_make_first();
+  
+  // 如果返回了（不应该发生），进入死循环
+  for(;;) {
+    __asm__ volatile("wfi");
   }
 }

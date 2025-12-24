@@ -16,7 +16,7 @@ void trap_kernel_inithart(void)
   plic_inithart();
 }
 
-void trap_kernel_handler(trapframe_t* tf)
+void trap_kernel_handler(kernel_trapframe_t* tf)
 {
   uint64 scause = r_scause();
 

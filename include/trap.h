@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include "riscv.h"
 
-typedef struct trapframe {
+typedef struct kernel_trapframe {
   uint64 ra, sp, gp, tp;
   uint64 t0,t1,t2;
   uint64 s0,s1;
@@ -14,11 +14,11 @@ typedef struct trapframe {
   uint64 sstatus;
   uint64 scause;
   uint64 stval;
-} trapframe_t;
+} kernel_trapframe_t;
 
 void trap_kernel_init(void);
 void trap_kernel_inithart(void);
-void trap_kernel_handler(trapframe_t* tf);
+void trap_kernel_handler(kernel_trapframe_t* tf);
 
 void kernel_vector(void);
 void timer_vector(void);

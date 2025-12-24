@@ -22,4 +22,11 @@
 #define CLINT_BASE 0x2000000ul
 #define PLIC_BASE  0x0c000000ul
 
+// Trampoline页（用于用户态trap）
+#define TRAMPOLINE (MAXVA - PGSIZE)
+
+// 每个进程的内核栈（KSTACK宏用于计算每个进程的kstack地址）
+// KSTACK(id) = TRAMPOLINE - (id+1)*2*PGSIZE
+#define KSTACK(id) (TRAMPOLINE - ((id)+1)*2*PGSIZE)
+
 #endif

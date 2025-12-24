@@ -119,6 +119,8 @@ void vm_print(pgtbl_t pgtbl)
 // 初始化内核页表（只在CPU 0调用一次）
 void kvm_init(void)
 {
+    extern char _trampoline[];
+    
     kernel_pgtbl = (pgtbl_t)pmem_alloc(true);
     memset(kernel_pgtbl, 0, PGSIZE);
     
@@ -129,6 +131,20 @@ void kvm_init(void)
     
     // 映射内核代码和数据区域（直接映射）
     vm_mappages(kernel_pgtbl, KERNEL_BASE, KERNEL_BASE, 0x8000000, PTE_R | PTE_W | PTE_X);
+    
+    // 映射trampoline页（所有进程共享，映射到相同的物理页）
+    uint64 trampoline_pa = (uint64)_trampoline;
+    vm_mappages(kernel_pgtbl, TRAMPOLINE, trampoline_pa, PGSIZE, PTE_R | PTE_X);
+    
+    // 映射每个进程的内核栈（为每个可能的进程预留空间）
+    for(int i = 0; i < NCPU; i++) {
+        uint64 kstack_va = KSTACK(i);
+        // 为每个进程分配2页内核栈（guard page + stack）
+        void* kstack_pa = pmem_alloc(true);
+        if(kstack_pa) {
+            vm_mappages(kernel_pgtbl, kstack_va, (uint64)kstack_pa, PGSIZE, PTE_R | PTE_W);
+        }
+    }
 }
 
 // 初始化每个CPU的内核页表（只加载页表，不重复映射）

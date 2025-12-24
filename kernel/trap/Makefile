@@ -3,7 +3,7 @@
 # 头文件
 INLCUDES := ../../include
 
-OBJS := trap.o trap_kernel.o
+OBJS := trap.o trap_kernel.o trampoline.o trap_user.o
 
 .PHONY: clean build
 
