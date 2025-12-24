@@ -136,8 +136,7 @@ void kvm_init(void)
     uint64 trampoline_pa = (uint64)_trampoline;
     vm_mappages(kernel_pgtbl, TRAMPOLINE, trampoline_pa, PGSIZE, PTE_R | PTE_X);
     
-    printf("get a syscall from proc 0\n");
-    printf("get a syscall from proc 0\n");
+    
     // 映射每个进程的内核栈（为每个可能的进程预留空间）
     for(int i = 0; i < NCPU; i++) {
         uint64 kstack_va = KSTACK(i);
