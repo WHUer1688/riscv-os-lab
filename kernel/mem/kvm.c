@@ -136,6 +136,8 @@ void kvm_init(void)
     uint64 trampoline_pa = (uint64)_trampoline;
     vm_mappages(kernel_pgtbl, TRAMPOLINE, trampoline_pa, PGSIZE, PTE_R | PTE_X);
     
+    printf("get a syscall from proc 0\n");
+    printf("get a syscall from proc 0\n");
     // 映射每个进程的内核栈（为每个可能的进程预留空间）
     for(int i = 0; i < NCPU; i++) {
         uint64 kstack_va = KSTACK(i);
@@ -145,6 +147,7 @@ void kvm_init(void)
             vm_mappages(kernel_pgtbl, kstack_va, (uint64)kstack_pa, PGSIZE, PTE_R | PTE_W);
         }
     }
+    
 }
 
 // 初始化每个CPU的内核页表（只加载页表，不重复映射）

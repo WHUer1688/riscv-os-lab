@@ -1,7 +1,9 @@
 .section trampsec
+.globl trampoline
 .globl user_vector
 .globl user_return
 
+trampoline:
 # user_vector: 用户态trap入口
 # 当用户态发生trap时，硬件会跳转到这里
 # 需要保存用户寄存器到trapframe，然后调用trap_user_handler

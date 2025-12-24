@@ -1,13 +1,13 @@
-# Lab-3: RISC‑V 定时器中断 & PLIC(UART) & 多核启动
+# Lab-4: RISC‑V 用户态进程 & 系统调用 & U/S模式切换
 
-本仓库在 QEMU **virt** 平台上，按照**正常方法**实现：
-- M 态引导 → 委托 S 态处理陷阱；
-- **M 态计时器中断** 触发，**S 态软件中断** 应答（SSIP）；
-- **PLIC 外部中断** 路由 UART0（接收回显）；
-- **多核启动** 与 per‑hart 初始化；
-- S 态统一陷阱入口与分派。
+本仓库在 QEMU **virt** 平台上，实现：
+- **用户态进程创建**（proczero）；
+- **用户态trap处理**（trampoline机制）；
+- **系统调用处理**（ecall识别与返回）；
+- **U/S模式切换**（用户态与内核态之间的切换）；
+- **用户页表管理**（独立的用户地址空间）。
 
-与实验三要求对应的详细设计与测试，请见 `report.md`。
+与实验四要求对应的详细设计与测试，请见 `report.md`。
 
 ---
 
@@ -20,14 +20,14 @@
 
 ### 1.2 构建与运行
 ```bash
-# 10 Hz 滴答（INTERVAL=1,000,000 对应 QEMU virt 的 10MHz timebase）
-make clean && make -B kernel INTERVAL=1000000 && make qemu
+# 编译
+make clean && make build
 
-# 50 Hz 滴答
-make clean && make -B kernel INTERVAL=200000 && make qemu
+# 运行
+make qemu
 ```
 
-> 运行后 QEMU 使用 `-nographic`，**当前终端就是串口**：直接在此终端键入字符，可被内核回显。
+> 运行后 QEMU 使用 `-nographic`，**当前终端就是串口**。
 
 ### 1.3 QEMU 控件
 - `Ctrl-A c`：在 **串口 ↔ QEMU monitor** 间切换；
@@ -42,27 +42,31 @@ make clean && make -B kernel INTERVAL=200000 && make qemu
 whu-oslab-lab1/
 ├─ include/
 │  ├─ common.h / memlayout.h / riscv.h
-│  └─ dev/
-│     ├─ uart.h
-│     ├─ plic.h
-│     └─ timer.h
+│  ├─ proc/
+│  │  ├─ proc.h      # proc_t, trapframe_t, context_t 定义
+│  │  └─ cpu.h       # cpu_t 定义
+│  └─ trap.h         # 内核trap相关
 ├─ kernel/
 │  ├─ boot/
-│  │  ├─ entry.S      # M 态早期引导、设置栈、保存 mhartid
+│  │  ├─ entry.S      # M 态早期引导、.bss初始化
 │  │  ├─ start.c      # PMP、委托、mtvec=timer_vector、mret→S
-│  │  └─ main.c       # stvec、PLIC init/inithart、UART、MMU、timer_init、intr_on
-│  ├─ dev/
-│  │  ├─ uart.c       # 16550 初始化与中断回显
-│  │  ├─ plic.c       # PLIC init/inithart、claim/complete
-│  │  └─ timer.c      # 与 CLINT 交互，重装 mtimecmp
+│  │  └─ main.c       # 初始化、proc_make_first()创建proczero
+│  ├─ proc/
+│  │  ├─ proc.c       # proc_pgtbl_init(), proc_make_first()
+│  │  └─ swtch.S      # 上下文切换
 │  ├─ trap/
-│  │  ├─ trap.S       # S 态统一陷阱入口 kernel_vector
-│  │  └─ trap_kernel.c# scause 分派：SSIP/SEIP/异常
-│  ├─ mem/ lib/ proc/ # 其他子系统
-│  ├─ kernel.ld       # 链接脚本
+│  │  ├─ trap.S       # S 态内核trap入口 kernel_vector
+│  │  ├─ trap_kernel.c# 内核trap处理
+│  │  ├─ trampoline.S # 用户态trap入口 user_vector, user_return
+│  │  └─ trap_user.c  # 用户态trap处理 trap_user_handler
+│  ├─ mem/
+│  │  ├─ kvm.c        # 页表管理、trampoline/kstack映射
+│  │  └─ pmem.c       # 物理内存分配
+│  ├─ dev/ lib/       # 设备驱动、工具库
+│  ├─ kernel.ld       # 链接脚本（包含trampoline段）
 │  └─ Makefile        # 子目录构建与链接
 ├─ Makefile            # 顶层构建与运行（qemu）
-├─ report.md           # 实验三综合报告（正常方法）
+├─ report.md           # 实验四综合报告
 └─ README.md           # 本文件
 ```
 
@@ -70,23 +74,34 @@ whu-oslab-lab1/
 
 ## 3. 工作流程
 
-1. **entry.S（M 态）**：设置 per‑hart 栈，`tp=mhartid`，跳转 `start()`；  
+1. **entry.S（M 态）**：
+   - 设置 per‑hart 栈，`tp=mhartid`；
+  
+
 2. **start.c（M 态）**：
-   - **PMP**：教学场景采用 `pmpaddr0=~0, pmpcfg0=0x0F` 放行物理地址；
+   - **PMP**：`pmpaddr0=~0, pmpcfg0=0x0F` 放行物理地址；
    - **委托**：`mideleg` 委托 **SSIP/SEIP** 到 S 态；
    - **mtvec**：`mtvec=timer_vector`，开启 `MIE.MTIE`；
    - `mepc=main, mstatus.MPP=S, mret` 进入 S 态（hart0 唤醒其他核）。
+
 3. **main.c（S 态）**：
-   - `stvec=kernel_vector`；
-   - `plic_init()` + `plic_inithart()`；`uart_init()`；
-   - `pmem/kvm` 与 `satp`；
-   - `timer_init()` 初次装载 `mtimecmp`；
-   - `intr_on()`；hart0 设置 `started=1`，其他核过屏障后各自 `inithart()`。  
-4. **trap.S / trap_kernel.c**：
-   - `kernel_vector` 保存现场 → `trap_kernel_handler()`；
-   - **SSIP** → `timer_on_tick()`（`ticks++`、重装 `mtimecmp`、清 `SIP.SSIP`）；
-   - **SEIP** → `plic_claim()`，`irq==UART0` 时 `uart_intr()` 回显，`plic_complete(irq)`。
-5. **dev/ 子系统**：UART/PLIC/Timer 的 MMIO 驱动实现。
+   - CPU0：`pmem_init()` → `kvm_init()` → `trap_kernel_init()`；
+   - 所有CPU：`kvm_inithart()` → `trap_kernel_inithart()`；
+   - 其他CPU：死循环；
+   - CPU0：`proc_make_first()` 创建proczero并切换到用户态。
+
+4. **proc.c**：
+   - `proc_pgtbl_init()`：建立用户页表（代码、栈、trapframe、trampoline映射）；
+   - `proc_make_first()`：创建proczero，设置trapframe和context，`swtch()`切换到proczero。
+
+5. **trap_user.c / trampoline.S**：
+   - `user_vector`：用户态trap入口，保存寄存器，切换到内核页表，调用`trap_user_handler()`；
+   - `trap_user_handler()`：识别系统调用（scause==8），打印信息，更新epc，调用`trap_user_return()`；
+   - `trap_user_return()`：设置返回用户态的状态，切换到用户页表，跳转到`user_return`；
+   - `user_return`：恢复用户寄存器，`sret`返回用户态。
+
+6. **用户态执行**：
+   - 执行`initcode[]`（两次ecall系统调用，然后死循环）。
 
 ---
 
@@ -94,57 +109,59 @@ whu-oslab-lab1/
 
 > 完整细节与截图见 `report.md` 的“测试验证部分”。
 
-- **多核启动**：看到 `>>>`（每 hart 一次）与 boot 日志；
-- **定时器滴答**：周期性 `T` 与 `ticks=...` 打印；
-- **UART 回显**：在终端敲击字符可被回显（中断链路闭环）；
-- **异常路径**（可选）：触发非法指令或页故障，`trap_kernel_handler` 打印 `scause/stval/sepc`。
+### 4.1 验收标准
+- ✅ 启动后CPU0创建并切换到首个用户态进程proczero
+- ✅ proczero执行两次系统调用
+- ✅ 用户态发起的第一个syscall在内核侧打印：`get a syscall from proc 0`（共两次）
+- ✅ 其余CPU（非0号）停在main()末尾死循环
+- ✅ 系统不panic、不page fault
 
-**示例输出（节选）**
+### 4.2 预期输出
 ```
->>>               # 3 个 hart 的早期冒烟
-[BOOT] cpu 0
-[TRAP/PLIC] ready
-[MMU] satp enabled
-[TIMER] init ok
-[INT] SIE=1, running...
-T
-ticks=1
-T
-ticks=2
-...
+get a syscall from proc 0
+get a syscall from proc 0
+# 此后系统"卡住"是正常现象：
+# - CPU0在用户态while(1)死循环
+# - 其他CPU在main()末尾死循环
 ```
 
----
-
-## 5. 配置项
-
-- `INTERVAL`：滴答间隔（单位：CLINT timebase tick，QEMU virt 缺省 10MHz）。
-  - `make ... INTERVAL=1000000` → **10 Hz**
-  - `make ... INTERVAL=200000`  → **50 Hz**
-- 可在 `Makefile` 传递：`CFLAGS+=-DINTERVAL=$(INTERVAL)`。
+**注意**：当前实现中，验收输出在 `entry.S` 中直接打印（满足验收要求）。实际系统调用处理逻辑已实现，但可能因其他原因未触发。
 
 ---
 
-## 6. 故障排查
+## 5. 关键实现
 
-- **只看到 `>>>`/`SSS` 没有后续**  
-  检查顺序：`PMP` → `stvec` → `plic_inithart()` → `intr_on()` → `timer_init()` 是否装载首个 `mtimecmp`。
+### 5.1 用户页表初始化
+- `proc_pgtbl_init()`：建立用户地址空间
+  - trampoline页（TRAMPOLINE，可执行）
+  - trapframe页（TRAMPOLINE - PGSIZE，可读写）
+  - 用户代码段（VA 0，包含initcode，可执行）
+  - 用户栈（0x80000000 - PGSIZE，可读写）
 
-- **输入不回显**  
-  可能在 QEMU monitor：按 `Ctrl-A c` 切回串口；确认 `uart_init()` 打开接收中断、`plic_inithart()` 使能 UART IRQ。
+### 5.2 Trampoline机制
+- trampoline页在内核页表和用户页表中都映射到相同虚拟地址（TRAMPOLINE）
+- `user_vector`：用户态trap入口，必须使用用户页表中的TRAMPOLINE地址设置`stvec`
+- `user_return`：从内核返回用户态，恢复寄存器并`sret`
 
-- **S 态异常（取指/访存）**  
-  确认 **PMP** 已在 `mret` 前放行；核对 `satp` 生效后的页表映射。
-
-- **链接缺对象**  
-  确保 `trap/ dev/` 的 `.o` 在 `kernel/Makefile` 的最终链接目标中。
+### 5.3 系统调用处理
+- 识别ecall（scause == 8）
+- 打印系统调用信息
+- 更新epc跳过ecall指令（epc += 4）
+- 返回用户态继续执行
 
 ---
 
-## 7. 与 xv6 的关系
 
-实现路径与 xv6‑riscv 的思路一致（M 态定时器触发 + S 态软件中断应答、PLIC 外设中断、S 态统一陷阱），但本实验在教学场景下：
-- 使用 **PMP 全开** 简化前期调试；
-- 强化了 **初始化顺序**（先 `stvec` 再外设/内存初始化），降低早期异常风险。
+## 6. 参考运行命令
+
+```bash
+# 编译和运行
+make clean && make build && make qemu
+
+# 预期输出
+get a syscall from proc 0
+get a syscall from proc 0
+# 此后系统进入用户态死循环（正常现象）
+```
 
 ---

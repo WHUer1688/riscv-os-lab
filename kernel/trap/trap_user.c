@@ -13,35 +13,28 @@ void trap_user_handler(trapframe_t* tf)
 {
     uint64 scause = r_scause();
     
-    // 检查是否是系统调用（ecall）
-    // ecall的scause值通常是8（Environment call from U-mode）
-    if(scause == 8) {
-        // 系统调用
-        proc_t *p = myproc();
-        if(p) {
-            printf("get a syscall from proc %d\n", p->pid);
-        }
+    // 先同步一下 sepc 到 tf
+    tf->epc = r_sepc();
+    
+    if (scause == 8) { // 8 = ecall from U-mode
+        printf("get a syscall from proc %d\n", myproc()->pid);
         
-        // 前进PC（跳过ecall指令，通常是4字节）
-        // 需要更新trapframe中的epc，因为user_return会使用它
-        uint64 sepc = r_sepc();
-        p->tf->epc = sepc + 4;
-    } else {
-        // 其他异常/中断：打印信息便于调试
-        printf("user trap: scause=%lx stval=%lx sepc=%lx\n", scause, r_stval(), r_sepc());
-        for(;;) { }
+        // 必须跳过 ecall 指令，否则会无限陷入->无限打印
+        tf->epc += 4;
+        
+        trap_user_return(tf); // 回到用户态执行下一条（第二次 ecall）
+        return;
     }
     
-    // 返回用户态
-    trap_user_return(tf);
+    for(;;) {}
 }
 
 // 从内核返回用户态
 void trap_user_return(trapframe_t* tf)
 {
     proc_t *p = myproc();
-    if(!p || !p->tf) {
-        panic("trap_user_return: no proc or tf");
+    if(!p || !p->pgtbl) {
+        panic("trap_user_return: no proc or pgtbl");
     }
     
     // 设置从S回U的必要状态
@@ -52,15 +45,16 @@ void trap_user_return(trapframe_t* tf)
     sstatus |= SSTATUS_SPIE;
     w_sstatus(sstatus);
     
-    // 设置sepc为用户epc
-    w_sepc(p->tf->epc);
+    // 设置sepc为用户epc（使用传入的tf）
+    w_sepc(tf->epc);
     
-    // 设置sscratch为trapframe地址（用于下次trap时保存寄存器）
-    w_sscratch((uint64)p->tf);
+    // 设置sscratch为trapframe的用户虚拟地址（用于下次trap时保存寄存器）
+    uint64 trapframe_user_va = TRAMPOLINE - PGSIZE;
+    w_sscratch(trapframe_user_va);
     
-    // 设置stvec为用户trap向量
-    extern void user_vector(void);
-    w_stvec((uint64)user_vector);
+    // 设置stvec为用户trap向量（必须使用用户页表中的TRAMPOLINE地址）
+    // user_vector 在 trampoline 页首，所以直接使用 TRAMPOLINE
+    w_stvec(TRAMPOLINE);
     
     // 切换到用户页表（trampoline在用户页表中也映射了）
     w_satp(MAKE_SATP(p->pgtbl));
@@ -68,15 +62,10 @@ void trap_user_return(trapframe_t* tf)
     
     // 跳转到trampoline的user_return，最终sret回到用户态
     // user_return需要trapframe地址在a0中
-    // user_return在trampoline中，在用户页表中映射到TRAMPOLINE地址
-    // 我们需要计算user_return在trampoline中的偏移，然后加上TRAMPOLINE地址
     extern void user_return(void);
     extern void user_vector(void);
     uint64 user_return_offset = (uint64)user_return - (uint64)user_vector;
     uint64 user_return_va = TRAMPOLINE + user_return_offset;
-    
-    // trapframe在用户页表中映射到TRAMPOLINE - PGSIZE
-    uint64 trapframe_user_va = TRAMPOLINE - PGSIZE;
     
     // 使用内联汇编将trapframe的用户虚拟地址放到a0，然后跳转到user_return的用户虚拟地址
     asm volatile(

@@ -5,7 +5,7 @@
 // 每核 4KB 栈（符号被 entry.S 用来设置 sp）
 __attribute__ ((aligned (16))) uint8 CPU_stack[4096 * NCPU];
 
-void main(void);
+int main(void);
 extern void timer_vector(void);
 
 // ---- CLINT: 用 MSIP 唤醒其他核 ----
@@ -68,6 +68,6 @@ void start(void)
   volatile uint64 *mtimecmp0 = (uint64 *)(0x02004000ULL + 8 * r_mhartid());
   *mtimecmp0 = *mtime + INTERVAL;  // INTERVAL 可被 make 传入
 
-  early_putc('S');  // 打点：到达 start 尾部
+
   asm volatile("mret");
 }

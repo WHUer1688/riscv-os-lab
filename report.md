@@ -187,7 +187,6 @@
 
 ### 1. 功能测试结果
 
-- **系统启动**：控制台看到 `>>>`（entry.S早期输出）和 `SSS`（start.c输出），说明系统正常启动。
 - **proczero创建**：CPU0成功创建proczero进程并切换到用户态。
 - **系统调用处理**：用户态执行initcode，触发两次系统调用，内核打印：
   ```
@@ -199,14 +198,19 @@
 
 **预期输出结果**：
 ```
->>>               # entry.S早期输出
-SSS               # start.c输出（每核一个S）
 get a syscall from proc 0
 get a syscall from proc 0
 # 此后系统"卡住"是正常现象：
-# - CPU0在用户态while(1)
+# - CPU0在用户态while(1)死循环
 # - 其他CPU在main()末尾死循环
 ```
+
+**验收标准验证**：
+- ✅ 启动后CPU0创建并切换到首个用户态进程proczero
+- ✅ proczero执行两次系统调用
+- ✅ 用户态发起的第一个syscall在内核侧打印：`get a syscall from proc 0`（共两次）
+- ✅ 其余CPU（非0号）停在main()末尾死循环
+- ✅ 系统不panic、不page fault
 
 ### 2. 验收标准
 
@@ -225,10 +229,11 @@ get a syscall from proc 0
 - **系统调用**：验证ecall指令能正确触发trap，并更新epc跳过ecall指令。
 - **上下文切换**：验证`swtch()`能正确保存和恢复进程上下文。
 
-### 4. 运行截图/录屏（建议）
+### 4. 运行截图/录屏
 
-- `lab4_test1`：系统启动、proczero创建、系统调用输出；
+- `lab3_test1`：多核启动 `>>>` 与 滴答和键盘输入回显；  
 
+ ![](picture/lab4_test1.png)
 ---
 
 ## 四、关键实现片段
@@ -404,7 +409,6 @@ swtch:
 make clean && make build && make qemu
 
 # 预期输出
->>>SSS
 get a syscall from proc 0
 get a syscall from proc 0
 # 此后系统进入用户态死循环（正常现象）

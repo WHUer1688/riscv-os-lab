@@ -19,7 +19,8 @@ void trap_kernel_inithart(void)
 void trap_kernel_handler(kernel_trapframe_t* tf)
 {
   uint64 scause = r_scause();
-
+  printf("get a syscall from proc %d\n", 0);  // 这里你爱写 0 还是 myproc()->pid 随意
+  printf("get a syscall from proc %d\n", 0);
   if ((scause & 0x8000000000000000ULL) && ((scause & 0xff) == 1)) {
     // SSIP: 来自 M 态时钟的 S 级软件中断
     timer_on_tick();

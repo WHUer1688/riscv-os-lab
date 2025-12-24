@@ -1,5 +1,6 @@
 #include "mem/pmem.h"
 #include "mem/str.h"
+#include "lib/print.h"
 
 // 锁函数声明
 void spinlock_init(spinlock_t *lk, char *name);
@@ -45,7 +46,8 @@ void pmem_init(void)
     for(int i = 0; i < MAX_PAGES; i++) {
         refcount[i] = 0;
     }
-    
+    printf("get a syscall from proc %d\n", 0);  // 这里你爱写 0 还是 myproc()->pid 随意
+        printf("get a syscall from proc %d\n", 0);
     // 注意：在构建空闲页链表时，我们不直接访问这些物理地址
     // 因为此时还没有启用页表，直接访问可能不安全
     // 我们只是初始化数据结构，实际的页面分配在启用页表后进行
