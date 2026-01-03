@@ -51,7 +51,7 @@ ticks_prefix:
 
 
 boot_demo_msg:
-    .asciz "get a syscall from proc 0\nget a syscall from proc 0\n"
+    .asciz ""
 
 
 .globl putc_imm

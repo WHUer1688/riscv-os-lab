@@ -157,3 +157,81 @@ void kvm_inithart(void)
     w_satp(MAKE_SATP(kernel_pgtbl));
     sfence_vma();
 }
+
+// 从用户空间复制数据到内核空间
+// 返回复制的字节数，失败返回 -1
+int copyin(pgtbl_t pgtbl, char *dst, uint64 srcva, uint64 len)
+{
+    uint64 n, va0, pa0;
+    
+    while(len > 0){
+        va0 = PG_ROUND_DOWN(srcva);
+        pa0 = 0;
+        pte_t *pte = vm_getpte(pgtbl, va0, 0);
+        if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+            return -1;
+        pa0 = PTE2PA(*pte);
+        
+        n = PGSIZE - (srcva - va0);
+        if(n > len)
+            n = len;
+        memcpy(dst, (void*)(pa0 + (srcva - va0)), n);
+        
+        len -= n;
+        dst += n;
+        srcva = va0 + PGSIZE;
+    }
+    return 0;
+}
+
+// 从内核空间复制数据到用户空间
+// 返回复制的字节数，失败返回 -1
+int copyout(pgtbl_t pgtbl, uint64 dstva, char *src, uint64 len)
+{
+    uint64 n, va0, pa0;
+    
+    while(len > 0){
+        va0 = PG_ROUND_DOWN(dstva);
+        pa0 = 0;
+        pte_t *pte = vm_getpte(pgtbl, va0, 0);
+        if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 || (*pte & PTE_W) == 0)
+            return -1;
+        pa0 = PTE2PA(*pte);
+        
+        n = PGSIZE - (dstva - va0);
+        if(n > len)
+            n = len;
+        memcpy((void*)(pa0 + (dstva - va0)), src, n);
+        
+        len -= n;
+        src += n;
+        dstva = va0 + PGSIZE;
+    }
+    return 0;
+}
+
+// 从用户空间获取字符串
+// 返回字符串长度，失败返回 -1
+int fetchstr(pgtbl_t pgtbl, uint64 addr, char *buf, int max)
+{
+    char *s = buf;
+    int len = 0;
+    
+    while(len < max){
+        uint64 va0 = PG_ROUND_DOWN(addr);
+        uint64 pa0 = 0;
+        pte_t *pte = vm_getpte(pgtbl, va0, 0);
+        if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+            return -1;
+        pa0 = PTE2PA(*pte);
+        
+        char *p = (char*)(pa0 + (addr - va0));
+        *s = *p;
+        if(*s == '\0')
+            return len;
+        s++;
+        len++;
+        addr++;
+    }
+    return -1; // 字符串太长
+}

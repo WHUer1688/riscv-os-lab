@@ -17,12 +17,18 @@ void trap_user_handler(trapframe_t* tf)
     tf->epc = r_sepc();
     
     if (scause == 8) { // 8 = ecall from U-mode
-        printf("get a syscall from proc %d\n", myproc()->pid);
-        
-        // 必须跳过 ecall 指令，否则会无限陷入->无限打印
+        // 必须跳过 ecall 指令，否则会无限陷入
         tf->epc += 4;
         
-        trap_user_return(tf); // 回到用户态执行下一条（第二次 ecall）
+        // 开启中断（xv6 的做法）
+        intr_on();
+        
+        // 调用系统调用处理函数
+        extern void syscall(void);
+        syscall();
+        
+        // syscall 返回后，通过 trap_user_return 返回用户态
+        trap_user_return(tf);
         return;
     }
     

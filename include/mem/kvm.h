@@ -41,6 +41,11 @@ void vm_print(pgtbl_t pgtbl);
 void kvm_init(void);
 void kvm_inithart(void);
 
+// 用户内存访问函数
+int copyin(pgtbl_t pgtbl, char *dst, uint64 srcva, uint64 len);
+int copyout(pgtbl_t pgtbl, uint64 dstva, char *src, uint64 len);
+int fetchstr(pgtbl_t pgtbl, uint64 addr, char *buf, int max);
+
 // 全局内核页表
 extern pgtbl_t kernel_pgtbl;
 
