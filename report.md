@@ -412,7 +412,9 @@ success
 
 ### 4. 运行截图/录屏
 
-（待添加测试运行截图）
+![](picture/lab7_test1.png)
+![](picture/lab7_test2.png)
+![](picture/lab7_test3.png)
 
 ---
 
