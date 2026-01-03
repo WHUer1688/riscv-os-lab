@@ -26,4 +26,7 @@ typedef enum {false = 0, true = 1} bool;
 // 页大小定义
 #define PGSIZE 4096
 
+// 文件系统块大小
+#define BLOCK_SIZE 1024
+
 #endif

@@ -6,6 +6,9 @@
 #include "mem/kvm.h"  // 需要pgtbl_t定义
 #include "lib/lock.h" // 需要 spinlock_t
 
+// 前向声明
+struct file;
+
 // 进程状态枚举
 enum proc_state {
     UNUSED = 0,
@@ -94,6 +97,9 @@ typedef struct proc {
     uint64 kstack;            // 内核栈的虚拟地址 [cite: 47]
     context_t ctx;            // 内核态进程上下文 [cite: 49]
     int time_slice;           // 时间片计数
+    
+    // 文件描述符
+    void *ofile[16];   // 打开的文件数组（使用void*避免循环依赖）
     
     // 锁
     spinlock_t lk;            // 进程锁

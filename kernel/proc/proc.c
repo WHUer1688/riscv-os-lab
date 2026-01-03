@@ -7,6 +7,8 @@
 #include "lib/print.h"
 #include "memlayout.h"
 #include "lib/lock.h"
+#include "fs/buf.h"
+#include "fs/fs.h"
 
 cpu_t cpus[NCPU];
 
@@ -171,6 +173,10 @@ found:
     p->ustack_pages = 1;
     p->heap_top = 0;
     p->time_slice = DEFAULT_SLICE;
+    // 初始化文件描述符数组
+    for (int i = 0; i < 16; i++) {
+        p->ofile[i] = NULL;
+    }
     
     // 分配trapframe
     void* trapframe_pa = pmem_alloc(true);
@@ -249,6 +255,15 @@ void fork_return(void)
     if(!p || !p->tf) {
         panic("fork_return: no proc or tf");
     }
+    
+    // 第一次返回用户态前初始化文件系统（只在proczero时执行一次）
+    static int fs_initialized = 0;
+    if (!fs_initialized && p->pid == 0) {
+        buf_init();
+        fs_init();
+        fs_initialized = 1;
+    }
+    
     // 返回到用户态
     trap_user_return(p->tf);
 }

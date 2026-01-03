@@ -3,6 +3,7 @@
 #include "dev/timer.h"
 #include "dev/plic.h"
 #include "dev/uart.h"
+#include "dev/virtio.h"
 #include "lib/print.h"
 #include "proc/proc.h"
 #include "lib/lock.h"
@@ -48,10 +49,12 @@ void trap_kernel_handler(kernel_trapframe_t* tf)
   }
 
   if ((scause & 0x8000000000000000ULL) && ((scause & 0xff) == 9)) {
-    // SEIP: 外部中断（PLIC → UART）
+    // SEIP: 外部中断（PLIC → UART/VIRTIO）
     int irq = plic_claim();
     if (irq == UART0_IRQ) {
       uart_intr();
+    } else if (irq == VIRTIO_IRQ) {
+      virtio_intr();
     }
     plic_complete(irq);
     return;

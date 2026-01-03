@@ -7,6 +7,8 @@
 int strlen(const char *s);
 char* strcpy(char *dst, const char *src);
 int strcmp(const char *p, const char *q);
+char* strncpy(char *dst, const char *src, int n);
+int strncmp(const char *p, const char *q, int n);
 void *memset(void *dst, int c, uint64 n);
 void *memmove(void *dst, const void *src, uint64 n);
 void *memcpy(void *dst, const void *src, uint64 n);

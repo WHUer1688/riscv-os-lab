@@ -128,6 +128,7 @@ void kvm_init(void)
     vm_mappages(kernel_pgtbl, UART_BASE, UART_BASE, PGSIZE, PTE_R | PTE_W);
     vm_mappages(kernel_pgtbl, CLINT_BASE, CLINT_BASE, PGSIZE, PTE_R | PTE_W);
     vm_mappages(kernel_pgtbl, PLIC_BASE, PLIC_BASE, PGSIZE, PTE_R | PTE_W);
+    vm_mappages(kernel_pgtbl, VIRTIO_BASE, VIRTIO_BASE, PGSIZE, PTE_R | PTE_W);
     
     // 映射内核代码和数据区域（直接映射）
     vm_mappages(kernel_pgtbl, KERNEL_BASE, KERNEL_BASE, 0x8000000, PTE_R | PTE_W | PTE_X);

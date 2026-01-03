@@ -59,3 +59,32 @@ void *memcpy(void *dst, const void *src, uint64 n)
 {
     return memmove(dst, src, n);
 }
+
+// 复制字符串（带长度限制）
+char* strncpy(char *dst, const char *src, int n)
+{
+    char *ret = dst;
+    int i;
+    for (i = 0; i < n && src[i] != '\0'; i++) {
+        dst[i] = src[i];
+    }
+    for (; i < n; i++) {
+        dst[i] = '\0';
+    }
+    return ret;
+}
+
+// 比较字符串（带长度限制）
+int strncmp(const char *p, const char *q, int n)
+{
+    int i;
+    for (i = 0; i < n && p[i] != '\0' && q[i] != '\0'; i++) {
+        if (p[i] != q[i]) {
+            return (unsigned char)p[i] - (unsigned char)q[i];
+        }
+    }
+    if (i < n) {
+        return (unsigned char)p[i] - (unsigned char)q[i];
+    }
+    return 0;
+}

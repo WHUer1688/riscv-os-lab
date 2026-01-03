@@ -21,6 +21,7 @@ extern uint64 sys_open(void);
 extern uint64 sys_close(void);
 extern uint64 sys_read(void);
 extern uint64 sys_write(void);
+extern uint64 sys_exec(void);
 
 // 系统调用函数指针数组
 static uint64 (*syscalls[])(void) = {
@@ -38,6 +39,7 @@ static uint64 (*syscalls[])(void) = {
     [SYS_close]  sys_close,
     [SYS_read]   sys_read,
     [SYS_write]  sys_write,
+    [SYS_exec]   sys_exec,
 };
 
 // 从 trapframe 获取第 n 个参数（原始值）

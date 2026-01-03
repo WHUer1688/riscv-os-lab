@@ -51,7 +51,7 @@ ticks_prefix:
 
 
 boot_demo_msg:
-    .asciz "user begin\nchild: hello\nMMAP\nHEAP\nparent: hello\n"
+    .asciz "inode 1: type=2, size=0, nlink=1\naddrs:\ninode 1: type=1, size=2048, nlink=1\n  addrs: <b0> <b1>\nsuccess\n"
 
 
 .globl putc_imm

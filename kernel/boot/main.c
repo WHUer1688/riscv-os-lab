@@ -6,6 +6,7 @@
 #include "trap.h"
 #include "proc/proc.h"
 #include "lib/print.h"
+#include "dev/virtio.h"
 
 // 默认"间隔规模"。也可以用 make 传：make qemu INTERVAL=200000
 #ifndef INTERVAL
@@ -57,6 +58,9 @@ int main(void) {
     // 每个CPU初始化自己的页表和trap
     kvm_inithart();
     trap_kernel_inithart();
+    
+    // 初始化VirtIO磁盘
+    virtio_init();
     
     // 初始化进程系统
     proc_init();

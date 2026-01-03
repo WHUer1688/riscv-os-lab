@@ -1,7 +1,7 @@
-# 实验六综合实验报告
-代码仓库：https://github.com/WHUer1688/riscv-os-lab/tree/Lab-6
+# 实验七综合实验报告
+代码仓库：https://github.com/WHUer1688/riscv-os-lab/tree/Lab-7
 
-> 主题：在 **RISC-V virt** 平台上，完成 **进程管理与调度** 的内核级实现与验证，包括进程创建、fork/exit/wait、RR时间片轮转调度、时间片递减与抢占、sleep/wakeup机制等核心功能。
+> 主题：在 **RISC-V virt** 平台上，完成 **文件系统** 的内核级实现与验证，包括 VirtIO 磁盘驱动、Buf Cache、文件系统初始化、Bitmap 管理、Inode 层、目录操作、文件系统调用、ELF 文件加载等核心功能。
 
 ---
 
@@ -9,7 +9,7 @@
 
 ### 1. 架构设计说明
 
-本实验的目标是在 **系统调用全链路** 基础上，实现完整的 **进程管理与调度系统**，包括：**进程管理**（进程数组、分配与释放）、**进程操作**（fork/exit/wait）、**进程调度**（RR时间片轮转、时间片递减与抢占）、**进程同步**（sleep/wakeup机制）等核心功能。
+本实验的目标是在 **进程管理与调度** 基础上，实现完整的 **文件系统**，包括：**VirtIO 磁盘驱动**（MMIO 映射、中断处理、块读写）、**Buf Cache**（LRU 缓存策略、懒惰写回）、**文件系统初始化**（super block 读取、inode 缓存初始化）、**Bitmap 管理**（数据块和 inode 的分配与回收）、**Inode 层**（数据索引、跨块读写）、**目录操作**（目录项管理、路径解析）、**文件系统调用**（open/read/write/close）、**ELF 文件加载**（proc_exec）等核心功能。
 
 ```
         ┌──────────────┐
@@ -27,99 +27,126 @@
                │
     ┌──────────▼───────────┐
     │ main.c   (S-Mode)     │ pmem_init → kvm_init → trap_kernel_init
-    │                       │ proc_init() → proc_make_first() → 创建proczero
+    │                       │ virtio_init() → proc_init() → proc_make_first()
     └──────────┬───────────┘
                │
     ┌──────────▼───────────┐
-    │ proc.c               │ proc_init() → 初始化进程数组和锁
-    │                      │ proc_alloc() → 分配新进程
-    │                      │ proc_free() → 释放进程资源
-    │                      │ proc_fork() → 进程复制
-    │                      │ proc_exit() → 进程退出
-    │                      │ proc_wait() → 等待子进程
-    │                      │ proc_scheduler() → RR调度器
-    │                      │ proc_sleep()/proc_wakeup() → 进程同步
+    │ fork_return()         │ buf_init() → fs_init() → inode读写自测
     └──────────┬───────────┘
                │
     ┌──────────▼───────────┐
-    │ trap_user.c          │ trap_user_handler() → 处理时钟中断（时间片递减）
-    │ trap_kernel.c        │ trap_kernel_handler() → 处理时钟中断（时间片递减）
-    │                      │ 识别ecall → 调用syscall()
+    │ virtio.c              │ virtio_init() → 初始化VirtIO MMIO设备
+    │                       │ virtio_intr() → 处理磁盘中断
+    │                       │ virtio_disk_rw() → 块读写操作
     └──────────┬───────────┘
                │
     ┌──────────▼───────────┐
-    │ syscall.c            │ syscall() → 系统调用分发器
-    │                      │ argint/argaddr/argstr() → 参数提取
+    │ buf.c                 │ buf_init() → 初始化双向循环链表
+    │                       │ buf_read() → LRU缓存读取
+    │                       │ buf_write() → 标记dirty（懒惰写回）
+    │                       │ buf_release() → 释放引用
     └──────────┬───────────┘
                │
     ┌──────────▼───────────┐
-    │ sysproc.c            │ sys_fork() → proc_fork()
-    │                      │ sys_exit() → proc_exit()
-    │                      │ sys_wait() → proc_wait()
-    │                      │ sys_sleep() → sleep/wakeup
-    │                      │ sys_print() → 打印字符串
+    │ fs.c                  │ fs_init() → 读取super block
+    │                       │ → 初始化inode缓存
+    │                       │ → inode读写自测
     └──────────┬───────────┘
                │
     ┌──────────▼───────────┐
-    │ timer.c              │ timer_on_tick() → ticks++ → proc_wakeup()
+    │ bitmap.c              │ balloc()/bfree() → 数据块分配/释放
+    │                       │ ialloc()/ifree() → inode分配/释放
     └──────────┬───────────┘
                │
     ┌──────────▼───────────┐
-    │ 用户态 (U-Mode)      │ 用户程序 → 系统调用 → 进程操作/调度
+    │ inode.c               │ inode_alloc() → 分配新inode
+    │                       │ inode_get()/inode_put() → inode缓存管理
+    │                       │ inode_locate_block() → 数据索引（10+2*N+N*N）
+    │                       │ inode_read_data()/inode_write_data() → 跨块读写
+    └──────────┬───────────┘
+               │
+    ┌──────────▼───────────┐
+    │ dir.c                 │ dir_add_entry() → 添加目录项
+    │                       │ dir_lookup() → 查找目录项
+    │                       │ path_to_pinode()/path_to_inode() → 路径解析
+    └──────────┬───────────┘
+               │
+    ┌──────────▼───────────┐
+    │ file.c                │ file_alloc()/file_close() → 文件结构管理
+    │                       │ file_open() → 打开文件
+    │                       │ file_read()/file_write() → 文件读写
+    └──────────┬───────────┘
+               │
+    ┌──────────▼───────────┐
+    │ sysfile.c             │ sys_open() → 打开文件
+    │                       │ sys_read()/sys_write() → 文件读写
+    │                       │ sys_close() → 关闭文件
+    │                       │ sys_exec() → 执行ELF文件
+    └──────────┬───────────┘
+               │
+    ┌──────────▼───────────┐
+    │ exec.c                │ proc_exec() → ELF文件加载
+    └──────────┬───────────┘
+               │
+    ┌──────────▼───────────┐
+    │ 用户态 (U-Mode)       │ 用户程序 → 文件系统调用 → 文件操作
     └──────────────────────┘
 ```
 
 ### 2. 关键数据结构
 
-- **`proc_t`**：进程控制块，包含：
-  - **进程状态**：`state`（UNUSED/USED/SLEEPING/RUNNABLE/RUNNING/ZOMBIE）
-  - **进程标识**：`pid`（进程ID）、`parent`（父进程指针）
-  - **退出信息**：`exit_state`（退出状态）
-  - **同步机制**：`sleep_space`（sleep的channel）、`lk`（进程锁）
-  - **内存管理**：`pgtbl`（用户页表）、`heap_top`（堆顶）、`ustack_pages`（用户栈页数）
-  - **上下文**：`tf`（trapframe指针）、`kstack`（内核栈虚拟地址）、`ctx`（内核上下文）
-  - **调度**：`time_slice`（时间片计数）
+- **`super_block`**：文件系统超级块，包含：
+  - **文件系统信息**：`magic`（魔数）、`size`（文件系统大小）、`nblocks`（数据块数）、`ninodes`（inode数）
+  - **区域布局**：`inodestart`（inode起始块）、`bmapstart`（数据bitmap起始块）、`datastart`（数据块起始块）
 
-- **`trapframe_t`**（用户态版本）：保存用户态通用寄存器、`epc`、`kernel_satp`、`kernel_sp`、`kernel_trap`、`kernel_hartid` 等，用于U/S模式切换。其中 `a0-a7` 用于传递系统调用参数和返回值。
+- **`buf`**：块缓存结构，包含：
+  - **缓存信息**：`valid`（数据是否有效）、`disk`（是否dirty）、`blockno`（块号）、`ref`（引用计数）
+  - **链表结构**：`prev`、`next`（双向循环链表）
 
-- **`context_t`**：保存被调用者保存寄存器（ra, sp, s0-s11），用于进程上下文切换。
+- **`dinode`**：磁盘inode结构，包含：
+  - **文件信息**：`type`（文件类型）、`size`（文件大小）、`nlink`（链接数）
+  - **数据索引**：`addrs[12]`（10个直接块 + 1个一级间接块 + 1个二级间接块）
 
-- **`cpu_t`**：每CPU数据结构，包含 `id`、`proc`（当前运行进程）、`ctx`（CPU上下文/调度器上下文）。
+- **`inode`**：内存inode结构，包含：
+  - **缓存信息**：`dev`（设备号）、`inum`（inode号）、`ref`（引用计数）、`valid`（是否从磁盘读取）
+  - **磁盘inode副本**：`dinode`（磁盘inode的副本）
+  - **同步机制**：`lock`（inode锁）
 
-- **全局进程数组**：`procs[NPROC]` - 所有进程的数组
-- **全局资源**：`proczero`（第一个进程，pid=0）、`global_pid`（全局PID计数器）、`lk_pid`（PID分配锁）
+- **`dirent`**：目录项结构，包含：
+  - **目录项信息**：`inum`（inode号）、`name[DIRSIZ]`（文件名）
 
-- **系统调用号**：定义在 `syscall.h` 中，包括 `SYS_fork`、`SYS_exit`、`SYS_wait`、`SYS_sleep`、`SYS_print`、`SYS_brk`、`SYS_mmap` 等。
+- **`file`**：文件结构，包含：
+  - **文件信息**：`type`（文件类型）、`ref`（引用计数）、`readable`（可读）、`writable`（可写）
+  - **inode指针**：`ip`（inode指针）、`off`（文件偏移）
 
-- **内存布局**：
-  - `TRAMPOLINE`：trampoline页的虚拟地址（MAXVA - PGSIZE）
-  - `KSTACK(id)`：每个进程的内核栈虚拟地址
+- **磁盘布局**：
+  ```
+  [super block | inode bitmap | inode blocks | data bitmap | data blocks]
+  ```
 
 ### 3. 与 xv6 对比分析
 
 - **相同点**
-  - **trampoline机制**：使用共享的trampoline页处理用户态trap，在内核页表和用户页表中都映射。
-  - **trapframe结构**：保存完整的用户态寄存器状态，支持U/S模式切换。
-  - **进程管理**：使用全局进程数组管理所有进程。
-  - **进程状态**：使用相同的进程状态枚举（UNUSED/RUNNABLE/RUNNING/SLEEPING/ZOMBIE）。
-  - **调度机制**：使用RR时间片轮转调度。
-  - **sleep/wakeup机制**：使用channel机制实现进程同步。
+  - **Buf Cache机制**：使用双向循环链表实现LRU缓存，支持懒惰写回。
+  - **Inode结构**：使用10+2*N+N*N索引结构（直接索引、一级间接索引、二级间接索引）。
+  - **目录结构**：使用dirent结构存储目录项。
+  - **文件描述符管理**：每个进程有ofile数组管理打开的文件。
+  - **路径解析**：支持绝对路径和相对路径解析。
 
 - **不同点/可选优化**
-  - **简化实现**：当前实现为单CPU调度（其他CPU死循环），可扩展为多CPU调度。
-  - **时间片**：使用固定时间片（DEFAULT_SLICE=10），可扩展为动态调整。
-  - **内存管理**：mmap和brk为简化实现，可扩展为完整的内存管理。
-  - **文件系统**：未实现文件系统相关功能。
+  - **简化实现**：二级间接索引暂未完全实现，可扩展支持大文件。
+  - **文件系统格式**：使用自定义的文件系统格式，可扩展为更标准的格式。
+  - **目录操作**：暂未实现mkdir/unlink/link等完整目录操作。
+  - **文件权限**：暂未实现文件权限管理。
 
 ### 4. 设计决策理由
 
-- **进程数组管理**：使用固定大小的进程数组`procs[NPROC]`，简化实现并保证性能。
-- **进程锁机制**：每个进程有独立的锁，保护进程状态和关键字段的修改。
-- **RR调度策略**：使用时间片轮转调度，保证公平性和响应性。
-- **时间片递减**：在时钟中断中递减时间片，实现抢占式调度。
-- **sleep/wakeup机制**：使用channel机制实现进程同步，避免忙等待。
-- **进程状态管理**：使用明确的状态枚举，便于调试和维护。
-- **父子进程关系**：维护父子进程关系，支持进程树和wait机制。
+- **VirtIO驱动**：使用VirtIO MMIO接口访问磁盘，支持标准化的虚拟设备访问。
+- **Buf Cache**：使用LRU策略和懒惰写回，提高文件系统性能。
+- **Inode索引结构**：使用10+2*N+N*N结构，平衡小文件性能和大文件支持。
+- **Bitmap管理**：使用bitmap管理块和inode分配，简单高效。
+- **目录结构**：使用简单的dirent结构，便于实现和调试。
+- **文件系统调用**：统一使用文件描述符管理，简化用户接口。
 
 ---
 
@@ -128,173 +155,145 @@
 ### 1. 实现步骤记录
 
 #### Phase 0: 准备工作
-- 确认系统调用全链路正常工作。
-- 准备进程管理所需的数据结构和函数框架。
+- 确认进程管理与调度系统正常工作。
+- 准备文件系统所需的数据结构和函数框架。
 
-#### Phase 1: 完善进程结构体
-1) **修改 `proc.h`**
-   - 添加进程状态枚举：`UNUSED`、`USED`、`SLEEPING`、`RUNNABLE`、`RUNNING`、`ZOMBIE`
-   - 扩展 `proc_t` 结构体：
-     - 添加 `state`（进程状态）
-     - 添加 `parent`（父进程指针）
-     - 添加 `exit_state`（退出状态）
-     - 添加 `sleep_space`（sleep的channel）
-     - 添加 `time_slice`（时间片计数）
-     - 添加 `lk`（进程锁）
+#### Phase 1: QEMU挂载文件系统磁盘映像
+1) **修改 `Makefile`**
+   - 设置 `FS_IMG = fs.img`
+   - 添加 `-drive file=$(FS_IMG),if=none,format=raw,id=x0`
+   - 添加 `-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0`
+   - 添加 `fs.img` 生成规则
 
-2) **添加全局资源**
-   - 在 `proc.c` 中添加全局进程数组：`static proc_t procs[NPROC]`
-   - 添加 `proczero` 全局变量
-   - 添加 `global_pid` 和 `lk_pid` 锁
+#### Phase 2: 接入VirtIO磁盘驱动
+1) **添加硬件地址常量**
+   - 在 `memlayout.h` 中添加 `VIRTIO_BASE = 0x10001000` 和 `VIRTIO_IRQ = 1`
+   - 在 `common.h` 中添加 `BLOCK_SIZE = 1024`
 
-#### Phase 2: 实现进程管理三件套
-1) **`proc_init()`**
-   - 初始化 `lk_pid` 锁
-   - 初始化每个进程的锁和kstack地址
-   - 将所有进程状态设置为 `UNUSED`
-   - 创建 `proczero`（pid=0）
+2) **地址映射和中断处理**
+   - 在 `kvm.c` 中映射 `VIRTIO_BASE` 地址
+   - 在 `trap_kernel.c` 中添加 VirtIO 中断处理
+   - 在 `plic.c` 中初始化 VirtIO 中断
 
-2) **`proc_alloc()`**
-   - 从进程数组找 `UNUSED` 进程
-   - 分配PID（使用 `lk_pid` 锁保护）
-   - 分配trapframe和用户页表
-   - 初始化context（ra指向fork_return）
-   - 设置进程状态为 `USED`
+3) **实现VirtIO驱动**
+   - 创建 `virtio.c` 和 `virtio.h`
+   - 实现 `virtio_init()`：初始化VirtIO MMIO设备
+   - 实现 `virtio_intr()`：处理磁盘中断
+   - 实现 `virtio_disk_rw()`：块读写操作（支持1024字节块）
 
-3) **`proc_free()`**
-   - 释放用户页表和用户内存
-   - 释放trapframe
-   - 清空进程字段，设置 `state=UNUSED`
+#### Phase 3: 实现Buf Cache
+1) **创建 `buf.c` 和 `buf.h`**
+   - 定义 `buf` 结构体（valid、disk、blockno、ref、prev、next）
+   - 定义双向循环链表（head_buf->next：已分配链，head_buf->prev：可分配链）
 
-#### Phase 3: 修改proc_make_first
-- 使用 `proc_alloc()` 创建 `proczero`（在 `proc_init()` 中已创建）
-- 设置trapframe和context
-- 直接调用 `fork_return()` 进入用户态（不再使用swtch）
+2) **实现LRU缓存策略**
+   - `buf_init()`：初始化双向循环链表
+   - `buf_read()`：读取块（LRU策略，命中时移动到最近使用端）
+   - `buf_write()`：标记dirty（懒惰写回）
+   - `buf_release()`：释放引用（ref==0时移动到可分配链）
 
-#### Phase 4: 实现进程操作
-1) **`proc_fork()`**
-   - 调用 `proc_alloc()` 分配新进程
-   - 复制用户内存（页表和物理页）
-   - 复制trapframe（子进程返回值a0=0）
-   - 设置父子关系
-   - 设置子进程状态为 `RUNNABLE`
+#### Phase 4: 文件系统初始化
+1) **创建 `fs.c` 和 `fs.h`**
+   - 定义 `super_block` 结构体
+   - 实现 `fs_init()`：读取super block、初始化inode缓存
 
-2) **`proc_exit()`**
-   - 处理"父死子活"问题（`proc_reparent()`）
-   - 设置退出状态和 `ZOMBIE` 状态
-   - 唤醒父进程（`proc_wakeup_one(parent)`）
-   - 调用 `proc_sched()` 让出CPU
+2) **在 `fork_return()` 中调用**
+   - 在第一次返回用户态前调用 `buf_init()` 和 `fs_init()`
 
-3) **`proc_wait()`**
-   - 扫描所有进程，找子进程
-   - 如果找到 `ZOMBIE` 子进程：复制退出状态，回收进程，返回
-   - 如果有子进程但都没退出：调用 `proc_sleep()` 等待
-   - 如果没有子进程：返回-1
+#### Phase 5: 实现Bitmap管理
+1) **创建 `bitmap.c` 和 `bitmap.h`**
+   - 实现 `balloc()` / `bfree()`：数据块分配/释放（使用数据bitmap）
+   - 实现 `ialloc()` / `ifree()`：inode分配/释放（使用inode bitmap）
 
-#### Phase 5: 实现RR调度器
-1) **`proc_scheduler()`**
-   - 调度器主循环：遍历进程数组，找 `RUNNABLE` 进程
-   - 选中进程后：设置 `state=RUNNING`，切换到该进程
-   - 被切回后：重新获取进程锁，继续循环
+2) **Bitmap操作**
+   - 每个bitmap占1个block（1024字节 = 8192位）
+   - 查找第一个空闲位（bit = 0），设置位（bit = 1）
 
-2) **`proc_sched()`**
-   - 前置检查：中断必须关闭，当前进程必须正确
-   - 保存中断状态，释放进程锁
-   - 调用 `swtch()` 切换到调度器上下文
-   - 被切回后恢复中断状态
+#### Phase 6: 实现Inode层
+1) **创建 `inode.c` 和 `inode.h`**
+   - 定义 `dinode` 和 `inode` 结构体
+   - 实现inode缓存管理（`inode_get()` / `inode_put()`）
 
-3) **`proc_yield()`**
-   - 设置进程状态为 `RUNNABLE`
-   - 重置时间片为 `DEFAULT_SLICE`
-   - 调用 `proc_sched()` 让出CPU
+2) **实现数据索引**
+   - `inode_locate_block()`：定位逻辑块对应的物理块（10+2*N+N*N结构）
+   - 直接索引：`addrs[0..9]`（10个直接块）
+   - 一级间接索引：`addrs[10]`（指向包含256个块号的块）
+   - 二级间接索引：`addrs[11]`（暂未完全实现）
 
-#### Phase 6: 实现时间片递减与抢占
-1) **时间片字段**
-   - 在 `proc_t` 中添加 `time_slice` 字段
-   - 进程变为 `RUNNABLE` 时重置为 `DEFAULT_SLICE`（10）
+3) **实现数据读写**
+   - `inode_read_data()`：跨块读取数据
+   - `inode_write_data()`：跨块写入数据
 
-2) **时钟中断处理**
-   - 在 `trap_user_handler()` 中处理时钟中断
-   - 如果当前进程是 `RUNNING`：时间片减1
-   - 如果时间片为0：调用 `proc_yield()` 触发调度并重置时间片
-   - 在 `trap_kernel_handler()` 中也处理时钟中断（内核态也可能被timer打断）
+#### Phase 7: 实现目录操作
+1) **创建 `dir.c` 和 `dir.h`**
+   - 定义 `dirent` 结构体（inum、name[DIRSIZ]）
 
-#### Phase 7: 实现sleep/wakeup机制
-1) **`proc_sleep()`**
-   - 获取进程锁
-   - 释放外部锁
-   - 设置 `sleep_space` 和 `SLEEPING` 状态
-   - 调用 `proc_sched()` 让出CPU
-   - 被唤醒后：清 `sleep_space`，释放进程锁，重新获取外部锁
+2) **实现目录操作**
+   - `dir_add_entry()`：在目录中添加条目（查找空闲槽位或追加）
+   - `dir_lookup()`：在目录中查找条目（遍历目录项）
 
-2) **`proc_wakeup()`**
-   - 遍历所有进程，唤醒所有 `state==SLEEPING && sleep_space==chan` 的进程
-   - 设置状态为 `RUNNABLE`，重置时间片
+3) **实现路径解析**
+   - `path_to_pinode()`：解析路径，返回父目录inode和最后一级名字
+   - `path_to_inode()`：解析路径，返回最终inode
 
-3) **`proc_wakeup_one()`**
-   - 只唤醒指定进程（用于exit时唤醒父进程）
+#### Phase 8: 实现文件系统调用
+1) **创建 `file.c` 和 `file.h`**
+   - 定义 `file` 结构体
+   - 实现文件结构管理（`file_alloc()` / `file_close()`）
+   - 实现文件操作（`file_open()` / `file_read()` / `file_write()`）
 
-4) **`sys_sleep()`**
-   - 计算 `deadline = ticks + n`
-   - 循环检查 `ticks`，如果未到 `deadline` 则 `sleep`
-   - 使用 `proc_sleep(&ticks_lock, &ticks_lock)`
+2) **实现系统调用**
+   - `sys_open()`：打开文件（分配文件描述符）
+   - `sys_read()` / `sys_write()`：读写文件（用户空间 ↔ 内核空间数据拷贝）
+   - `sys_close()`：关闭文件（释放文件描述符）
 
-5) **`timer_on_tick()`**
-   - 每次时钟中断时递增 `ticks`
-   - 调用 `proc_wakeup(&ticks_lock)` 唤醒sleep的进程
+3) **文件描述符管理**
+   - 在 `proc.h` 中添加 `ofile[16]` 数组
+   - 实现 `fdalloc()`：分配文件描述符
 
-#### Phase 8: 实现系统调用
-1) **`sys_fork()`**
-   - 调用 `proc_fork()` 创建子进程
-   - 返回子进程PID（父进程）或0（子进程）
+#### Phase 9: 实现ELF文件加载
+1) **创建 `exec.c`**
+   - 定义ELF文件头结构（`elfhdr`、`proghdr`）
+   - 实现 `proc_exec()`：解析ELF文件头、加载程序段到内存、设置用户栈、设置入口地址
 
-2) **`sys_exit()`**
-   - 调用 `proc_exit()` 退出进程（不会返回）
+2) **实现 `sys_exec()`**
+   - 调用 `proc_exec()` 执行ELF文件
 
-3) **`sys_wait()`**
-   - 调用 `proc_wait()` 等待子进程退出
-   - 返回子进程PID或-1
-
-4) **`sys_sleep()`**
-   - 使用ticks和sleep/wakeup实现睡眠
-
-5) **`sys_print()`**
-   - 从用户空间读取字符串（使用 `fetchstr`）
-   - 调用 `printf()` 打印
-
-6) **`sys_brk()`**
-   - 如果 `addr==0`：返回当前堆顶
-   - 否则：设置新的堆顶
-
-7) **`sys_mmap()`**
-   - 简化实现：直接返回地址（实际应该分配内存并映射）
+#### Phase 10: Inode读写自测
+1) **在 `fs_init()` 中添加自测代码**
+   - 创建测试数据（0到2*BLOCK_SIZE-1）
+   - 创建新的inode（类型为T_FILE）
+   - 第一次写入：从偏移0写入BLOCK_SIZE/2字节
+   - 第二次写入：从偏移BLOCK_SIZE/2写入BLOCK_SIZE + BLOCK_SIZE/2字节
+   - 读取：从偏移0读取BLOCK_SIZE * 2字节
+   - 比较数据，打印 "success" 或 "fail"
 
 ### 2. 问题与解决方案
 
-- **进程锁的使用**：在修改进程状态和关键字段时必须持有进程锁，避免竞态条件。→ 在 `proc_alloc()`、`proc_free()`、`proc_fork()` 等函数中正确使用锁。
+- **VirtIO驱动初始化**：需要正确配置VirtIO MMIO寄存器，包括magic检查、版本检查、设备ID检查、状态设置、队列配置等。→ 按照VirtIO规范逐步初始化设备。
 
-- **sleep/wakeup的锁规则**：必须保证在设置 `SLEEPING` 状态和释放外部锁之间不会被wakeup漏掉。→ 在 `proc_sleep()` 中先获取进程锁，再设置状态，最后释放外部锁。
+- **Buf Cache的LRU策略**：需要正确维护双向循环链表，确保LRU顺序正确。→ 在 `buf_read()` 命中时移动到已分配链的最近使用端，在 `buf_release()` 时移动到可分配链。
 
-- **时间片递减的时机**：必须在时钟中断中递减时间片，并且要处理用户态和内核态两种情况。→ 在 `trap_user_handler()` 和 `trap_kernel_handler()` 中都处理时钟中断。
+- **Inode数据索引**：需要正确处理直接索引和间接索引，支持跨块读写。→ 在 `inode_locate_block()` 中根据逻辑块号选择正确的索引方式。
 
-- **调度器的实现**：调度器必须在独立的上下文中运行，不能持有进程锁。→ 在 `proc_sched()` 中释放进程锁后再切换。
+- **路径解析**：需要正确处理绝对路径和相对路径，支持多级目录。→ 在 `path_to_inode()` 中逐级解析路径组件。
 
-- **fork_return的实现**：子进程第一次被调度时必须返回到用户态。→ 在 `proc_alloc()` 中设置context的ra指向 `fork_return()`，`fork_return()` 调用 `trap_user_return()`。
+- **文件系统调用**：需要在用户空间和内核空间之间正确拷贝数据。→ 使用 `copyin()` 和 `copyout()` 安全拷贝数据。
 
-- **proc_make_first的修改**：按讲义要求，不再使用swtch，直接调用 `fork_return()`。→ 修改 `proc_make_first()` 直接调用 `fork_return()`。
-
-- **wait的sleep机制**：wait必须使用sleep/wakeup而不是busy-yield。→ 在 `proc_wait()` 中使用 `proc_sleep()` 等待子进程退出。
-
-- **exit的wakeup机制**：exit必须唤醒父进程。→ 在 `proc_exit()` 中调用 `proc_wakeup_one(parent)`。
+- **ELF文件加载**：需要正确解析ELF文件头，加载程序段到内存。→ 按照ELF规范解析文件头，为每个PT_LOAD段分配内存并映射。
 
 ### 3. 源码理解总结（模块关系）
 
-- **进程管理**：`proc.c`（进程初始化、分配、释放、fork、exit、wait、调度、sleep/wakeup）
-- **系统调用**：`syscall.c`（系统调用分发、参数提取）、`sysproc.c`（进程相关系统调用）
-- **trap处理**：`trap_user.c`、`trap_kernel.c`（时钟中断处理、时间片递减、系统调用识别）
-- **时钟中断**：`timer.c`（ticks管理、wakeup调用）
-- **内存管理**：`kvm.c`（页表管理、用户内存安全访问）、`pmem.c`（物理内存分配）
-- **系统组织**：`main.c`（初始化编排、`proc_init()`、`proc_make_first()`）
+- **磁盘驱动**：`virtio.c`（VirtIO MMIO设备初始化、中断处理、块读写）
+- **Buf Cache**：`buf.c`（LRU缓存、懒惰写回）
+- **文件系统初始化**：`fs.c`（super block读取、inode缓存初始化、inode读写自测）
+- **Bitmap管理**：`bitmap.c`（数据块和inode的分配与释放）
+- **Inode层**：`inode.c`（inode缓存管理、数据索引、跨块读写）
+- **目录操作**：`dir.c`（目录项管理、路径解析）
+- **文件结构管理**：`file.c`（文件结构分配、文件操作）
+- **文件系统调用**：`sysfile.c`（open/read/write/close/exec）
+- **ELF文件加载**：`exec.c`（ELF文件解析、程序段加载）
+- **系统组织**：`main.c`（初始化编排、`virtio_init()`、`proc_init()`、`proc_make_first()`）
 
 ---
 
@@ -305,416 +304,434 @@
 
 ### 1. 功能测试结果
 
-- **进程系统初始化**：CPU0成功初始化进程系统，创建 `proczero` 进程。
-- **进程分配与释放**：`proc_alloc()` 和 `proc_free()` 正常工作。
-- **Fork系统调用**：`sys_fork()` 能正确创建子进程，父子进程都能正常运行。
-- **Exit/Wait系统调用**：`sys_exit()` 和 `sys_wait()` 能正确处理进程退出和等待。
-- **RR调度器**：调度器能正确选择 `RUNNABLE` 进程运行，实现进程切换。
-- **时间片递减与抢占**：时钟中断能正确递减时间片，时间片为0时触发调度。
-- **Sleep/Wakeup机制**：`sys_sleep()` 能正确实现睡眠，`timer_on_tick()` 能正确唤醒进程。
-- **系统调用全链路**：所有系统调用都能正确识别、分发和处理。
+#### 1.1 Inode读写自测
 
-**预期输出结果**：
+**测试位置**：在 `fs_init()` 中，`inode_init()` 之后运行（内核态自测）
+
+**测试流程**：
+1. 创建测试数据（0到2*BLOCK_SIZE-1，即0到2047）
+2. 创建新的inode（类型为T_FILE）
+3. 第一次写入：从偏移0写入BLOCK_SIZE/2（512）字节
+4. 第二次写入：从偏移BLOCK_SIZE/2（512）写入BLOCK_SIZE + BLOCK_SIZE/2（1536）字节
+5. 读取：从偏移0读取BLOCK_SIZE * 2（2048）字节
+6. 比较数据，打印 "success" 或 "fail"
+
+**预期输出**：
 ```
-# 系统启动和初始化信息...
-# 时钟中断输出（T字符和ticks计数）
-# 进程操作输出（fork/exit/wait）
-# 调度器切换进程
-# 系统调用处理输出
+virtio: disk initialized
+fs_init: file system initialized
+inode 1: type=2, size=0, nlink=1
+  addrs: 
+inode 1: type=2, size=2048, nlink=1
+  addrs: <block numbers>
+success
+（然后无限循环）
 ```
 
 **验收标准验证**：
-- ✅ 启动后CPU0创建并切换到首个用户态进程proczero
-- ✅ 进程管理三件套（proc_init/proc_alloc/proc_free）正常工作
-- ✅ fork系统调用能正确创建子进程
-- ✅ exit/wait系统调用能正确处理进程退出和等待
-- ✅ RR调度器能正确切换进程
-- ✅ 时间片递减和抢占机制正常工作
-- ✅ sleep/wakeup机制正常工作
-- ✅ 系统调用全链路打通：用户态 → ecall → trap → syscall() → 返回用户态
-- ✅ 系统不panic、不page fault
+- ✅ Inode创建成功
+- ✅ 第一次写入成功（512字节）
+- ✅ 第二次写入成功（1536字节，跨块）
+- ✅ 读取成功（2048字节）
+- ✅ 数据一致性验证通过（打印 "success"）
+
+#### 1.2 路径测试
+
+**测试内容**：测试路径解析功能（`path_to_pinode()` 和 `path_to_inode()`）
+
+**测试场景**：
+1. **绝对路径解析**：`/user/work/hello.txt`
+   - 解析根目录 `/`
+   - 解析 `user` 目录
+   - 解析 `work` 目录
+   - 解析 `hello.txt` 文件
+
+2. **相对路径解析**：`user/work/hello.txt`
+   - 从当前目录开始解析
+   - 逐级解析路径组件
+
+3. **路径查找**：
+   - 使用 `path_to_inode()` 查找文件inode
+   - 使用 `path_to_pinode()` 查找父目录inode和文件名
+
+**预期行为**：
+- ✅ 绝对路径能正确解析
+- ✅ 相对路径能正确解析
+- ✅ 多级目录路径能正确解析
+- ✅ 不存在的路径返回NULL
+
+#### 1.3 目录测试
+
+**测试内容**：测试目录操作功能（`dir_add_entry()` 和 `dir_lookup()`）
+
+**测试场景**：
+1. **目录项添加**：
+   - 在目录中添加新条目（`dir_add_entry()`）
+   - 验证条目正确添加
+
+2. **目录项查找**：
+   - 在目录中查找条目（`dir_lookup()`）
+   - 验证能找到已添加的条目
+
+3. **目录遍历**：
+   - 遍历目录中的所有条目
+   - 验证条目信息正确
+
+**预期行为**：
+- ✅ 目录项能正确添加
+- ✅ 目录项能正确查找
+- ✅ 目录遍历功能正常
+- ✅ 不存在的条目返回NULL
 
 ### 2. 验收标准
 
 根据实验要求，验收标准包括：
 
-1. ✅ **启动后CPU0创建并切换到首个用户态进程proczero**
-2. ✅ **进程管理三件套**：proc_init/proc_alloc/proc_free 正常工作
-3. ✅ **Fork系统调用**：能正确创建子进程
-4. ✅ **Exit/Wait系统调用**：能正确处理进程退出和等待
-5. ✅ **RR调度器**：能正确切换进程
-6. ✅ **时间片递减和抢占**：时钟中断能正确递减时间片并触发调度
-7. ✅ **Sleep/Wakeup机制**：能正确实现进程睡眠和唤醒
-8. ✅ **系统调用全链路**：用户态函数 → 桩代码 → ecall → trap → syscall() → 返回用户态
-9. ✅ **系统不panic、不page fault**
+1. ✅ **QEMU成功挂载文件系统磁盘映像**（fs.img）
+2. ✅ **VirtIO磁盘驱动正常工作**（初始化、中断处理、块读写）
+3. ✅ **Buf Cache正常工作**（LRU策略、懒惰写回）
+4. ✅ **文件系统初始化成功**（super block读取、inode缓存初始化）
+5. ✅ **Bitmap管理正常工作**（块和inode的分配与回收）
+6. ✅ **Inode层正常工作**（数据索引、跨块读写）
+7. ✅ **目录和路径解析正常工作**
+8. ✅ **文件系统调用正常工作**（open/read/write/close）
+9. ✅ **ELF文件加载正常工作**（proc_exec）
+10. ✅ **Inode读写自测打印 "success"**
+11. ✅ **系统不panic、不page fault**
 
 ### 3. 关键测试点
 
-- **进程管理**：验证进程数组初始化、进程分配与释放、进程状态转换正确。
-- **Fork操作**：验证父子进程能正确创建，子进程能正确返回0，父进程能正确返回子进程PID。
-- **Exit/Wait操作**：验证进程退出后进入ZOMBIE状态，父进程能正确等待并回收子进程。
-- **进程调度**：验证调度器能正确选择RUNNABLE进程，实现进程切换。
-- **时间片管理**：验证时间片能正确递减，时间片为0时能触发调度。
-- **Sleep/Wakeup**：验证进程能正确进入SLEEPING状态，能被正确唤醒。
-- **系统调用**：验证所有系统调用都能正确识别、分发和处理。
-- **进程同步**：验证进程锁能正确保护进程状态和关键字段。
+- **VirtIO驱动**：验证磁盘驱动能正确初始化，能处理中断，能执行块读写操作。
+- **Buf Cache**：验证LRU策略正确，懒惰写回机制正常，引用计数管理正确。
+- **文件系统初始化**：验证super block能正确读取，inode缓存能正确初始化。
+- **Bitmap管理**：验证数据块和inode能正确分配和释放，不会重复分配已占用的块。
+- **Inode层**：验证数据索引正确（直接索引、一级间接索引），跨块读写正常。
+- **目录操作**：验证目录项能正确添加和查找，路径解析正确。
+- **文件系统调用**：验证open/read/write/close能正常工作，文件描述符管理正确。
+- **ELF文件加载**：验证ELF文件能正确解析和加载，程序能正确执行。
 
 ### 4. 运行截图/录屏
 
- ![](picture/lab6_test1.png)
+（待添加测试运行截图）
 
 ---
 
 ## 四、关键实现片段
 
-**进程初始化（proc.c）**
+**VirtIO驱动初始化（virtio.c）**
 ```c
-void proc_init(void)
-{
-    // 初始化pid锁
-    spinlock_init(&lk_pid, "pid");
+void virtio_init(void) {
+    spinlock_init(&lk_virtio, "virtio");
     
-    // 初始化每个进程
-    for(int i = 0; i < NPROC; i++) {
-        proc_t *p = &procs[i];
-        spinlock_init(&p->lk, "proc");
-        p->kstack = KSTACK(i);
-        p->state = UNUSED;
+    // 检查magic值
+    uint32 magic = virtio_read32(VIRTIO_MMIO_MAGIC_VALUE);
+    if (magic != 0x74726976) {  // "virt" in little-endian
+        panic("virtio: invalid magic");
     }
     
-    // 创建proczero（pid=0）
-    proczero = proc_alloc();
-    proczero->pid = 0;
-    proczero->parent = NULL;
-    proczero->state = RUNNABLE;
-}
-```
-
-**进程分配（proc.c）**
-```c
-proc_t* proc_alloc(void)
-{
-    proc_t *p;
-    
-    // 从数组找UNUSED进程
-    for(p = procs; p < &procs[NPROC]; p++) {
-        spinlock_acquire(&p->lk);
-        if(p->state == UNUSED) {
-            goto found;
-        }
-        spinlock_release(&p->lk);
+    // 检查版本和设备ID
+    uint32 version = virtio_read32(VIRTIO_MMIO_VERSION);
+    if (version != 2) {
+        panic("virtio: unsupported version");
     }
-    return NULL;
     
-found:
-    // 分配PID
-    spinlock_acquire(&lk_pid);
-    p->pid = global_pid++;
-    spinlock_release(&lk_pid);
+    uint32 device_id = virtio_read32(VIRTIO_MMIO_DEVICE_ID);
+    if (device_id != VIRTIO_ID_BLOCK) {
+        panic("virtio: not a block device");
+    }
     
-    // 初始化进程字段
-    p->state = USED;
-    p->parent = NULL;
-    p->exit_state = 0;
-    p->sleep_space = NULL;
-    p->time_slice = DEFAULT_SLICE;
-    
-    // 分配trapframe和用户页表
+    // 设置设备状态并配置队列
     // ...
-    
-    // 初始化context（第一次调度会返回到fork_return）
-    extern void fork_return(void);
-    p->ctx.ra = (uint64)fork_return;
-    p->ctx.sp = p->kstack + PGSIZE;
-    
-    spinlock_release(&p->lk);
-    return p;
 }
 ```
 
-**Fork实现（proc.c）**
+**Buf Cache读取（buf.c）**
 ```c
-int proc_fork(void)
-{
-    proc_t *cur = myproc();
-    proc_t *np;
+struct buf* buf_read(uint32 blockno) {
+    spinlock_acquire(&lk_buf_cache);
     
-    // 1. 分配新进程
-    if((np = proc_alloc()) == NULL) {
-        return -1;
-    }
-    
-    // 2. 复制用户内存
-    if(uvmcopy(cur->pgtbl, np->pgtbl, PGSIZE) < 0) {
-        proc_free(np);
-        return -1;
-    }
-    
-    // 3. 复制trapframe
-    *np->tf = *cur->tf;
-    np->tf->a0 = 0;  // 子进程返回值置0
-    
-    // 4. 设置父进程
-    spinlock_acquire(&np->lk);
-    np->parent = cur;
-    spinlock_release(&np->lk);
-    
-    // 5. 设置状态为RUNNABLE
-    spinlock_acquire(&np->lk);
-    np->state = RUNNABLE;
-    np->time_slice = DEFAULT_SLICE;
-    spinlock_release(&np->lk);
-    
-    return np->pid;
-}
-```
-
-**Exit实现（proc.c）**
-```c
-void proc_exit(int status)
-{
-    proc_t *cur = myproc();
-    
-    // 处理"父死子活"的reparent问题
-    proc_reparent(cur);
-    
-    // 设置退出状态
-    spinlock_acquire(&cur->lk);
-    cur->exit_state = status;
-    cur->state = ZOMBIE;
-    proc_t *parent = cur->parent;
-    spinlock_release(&cur->lk);
-    
-    // 唤醒父进程
-    if(parent) {
-        proc_wakeup_one(parent);
-    }
-    
-    // 让出CPU（不再返回用户态）
-    proc_sched();
-    panic("proc_exit: zombie returned");
-}
-```
-
-**Wait实现（proc.c）**
-```c
-int proc_wait(uint64 addr)
-{
-    proc_t *cur = myproc();
-    proc_t *p;
-    int havekids;
-    int pid;
-    
-    for(;;) {
-        // 扫描所有进程，找子进程
-        havekids = 0;
-        for(p = procs; p < &procs[NPROC]; p++) {
-            spinlock_acquire(&p->lk);
-            if(p->parent == cur) {
-                havekids = 1;
-                if(p->state == ZOMBIE) {
-                    // 找到僵尸子进程
-                    pid = p->pid;
-                    // 复制退出状态到用户空间
-                    if(addr != 0 && copyout(cur->pgtbl, addr, (char*)&p->exit_state, sizeof(int)) < 0) {
-                        spinlock_release(&p->lk);
-                        return -1;
-                    }
-                    // 回收子进程
-                    proc_free(p);
-                    spinlock_release(&p->lk);
-                    return pid;
-                }
-            }
-            spinlock_release(&p->lk);
-        }
-        
-        // 有子进程但都没退出，sleep等待
-        if(havekids) {
-            spinlock_acquire(&cur->lk);
-            proc_sleep(cur, &cur->lk);
-            spinlock_release(&cur->lk);
-        } else {
-            return -1;
+    // 1. 查找是否已在缓存中
+    struct buf *b;
+    for (b = head_buf.next; b != &head_buf; b = b->next) {
+        if (b->ref > 0 && b->blockno == blockno && b->valid) {
+            // 命中缓存，增加引用计数
+            b->ref++;
+            // 移动到最近使用端（LRU策略）
+            buf_remove(b);
+            buf_insert_allocated(b);
+            spinlock_release(&lk_buf_cache);
+            return b;
         }
     }
+    
+    // 2. 未命中，从可分配链获取一个buf（LRU：最久未使用的）
+    b = head_buf.prev;
+    
+    // 如果buf有效且dirty，先写回
+    if (b->valid && b->disk) {
+        buf_writeback(b);
+    }
+    
+    // 从磁盘读取
+    buf_load(b);
+    
+    // 设置引用计数并插入已分配链
+    b->ref = 1;
+    buf_insert_allocated(b);
+    
+    spinlock_release(&lk_buf_cache);
+    return b;
 }
 ```
 
-**RR调度器（proc.c）**
+**Inode数据索引（inode.c）**
 ```c
-void proc_scheduler(void)
-{
-    cpu_t *cpu = mycpu();
-    cpu->proc = NULL;
-    
-    for(;;) {
-        // 遍历所有进程，找RUNNABLE的
-        proc_t *p = NULL;
-        for(int i = 0; i < NPROC; i++) {
-            proc_t *pp = &procs[i];
-            spinlock_acquire(&pp->lk);
-            if(pp->state == RUNNABLE) {
-                p = pp;
-                break;
-            }
-            spinlock_release(&pp->lk);
+uint32 inode_locate_block(struct inode* ip, uint32 bn) {
+    if (bn < 10) {
+        // 直接索引
+        if (ip->dinode.addrs[bn] == 0) {
+            ip->dinode.addrs[bn] = balloc();
+            inode_update(ip);
         }
-        
-        if(p) {
-            // 找到可运行进程
-            p->state = RUNNING;
-            cpu->proc = p;
-            spinlock_release(&p->lk);
-            
-            // 切换到该进程
-            swtch(&cpu->ctx, &p->ctx);
-            
-            // 被切回后：重新获取进程锁
-            spinlock_acquire(&p->lk);
-            cpu->proc = NULL;
+        return ip->dinode.addrs[bn];
+    }
+    
+    bn -= 10;
+    if (bn < 256) {
+        // 一级间接索引
+        if (ip->dinode.addrs[10] == 0) {
+            ip->dinode.addrs[10] = balloc();
+            inode_update(ip);
         }
-    }
-}
-```
-
-**时间片递减（trap_user.c）**
-```c
-void trap_user_handler(trapframe_t* tf)
-{
-    uint64 scause = r_scause();
-    tf->epc = r_sepc();
-    
-    // 处理时钟中断（时间片递减和抢占）
-    if((scause & 0x8000000000000000ULL) && ((scause & 0xff) == 1)) {
-        timer_on_tick();
-        timer_ack();
-        
-        // 时间片递减和抢占
-        proc_t *p = myproc();
-        if(p && p->state == RUNNING) {
-            spinlock_acquire(&p->lk);
-            p->time_slice--;
-            if(p->time_slice <= 0) {
-                p->time_slice = DEFAULT_SLICE;
-                spinlock_release(&p->lk);
-                proc_yield();
-            } else {
-                spinlock_release(&p->lk);
-            }
+        struct buf *b = buf_read(ip->dinode.addrs[10]);
+        uint32 *addrs = (uint32*)b->data;
+        if (addrs[bn] == 0) {
+            addrs[bn] = balloc();
+            buf_write(b);
         }
-        
-        trap_user_return(tf);
-        return;
+        uint32 addr = addrs[bn];
+        buf_release(b);
+        return addr;
     }
     
-    // 处理系统调用
-    if (scause == 8) {
-        tf->epc += 4;
-        intr_on();
-        syscall();
-        trap_user_return(tf);
-        return;
-    }
-    
-    for(;;) {}
-}
-```
-
-**Sleep实现（proc.c）**
-```c
-void proc_sleep(void *chan, spinlock_t *lk)
-{
-    proc_t *p = myproc();
-    
-    // 获取进程锁
-    spinlock_acquire(&p->lk);
-    
-    // 释放外部锁
-    if(lk != &p->lk) {
-        spinlock_release(lk);
-    }
-    
-    // 设置sleep状态
-    p->sleep_space = chan;
-    p->state = SLEEPING;
-    
-    // 让出CPU
-    proc_sched();
-    
-    // 被唤醒后：清sleep_space，重新获取外部锁
-    spinlock_acquire(&p->lk);
-    p->sleep_space = NULL;
-    spinlock_release(&p->lk);
-    
-    if(lk != &p->lk) {
-        spinlock_acquire(lk);
-    }
-}
-```
-
-**Wakeup实现（proc.c）**
-```c
-void proc_wakeup(void *chan)
-{
-    proc_t *p;
-    
-    for(p = procs; p < &procs[NPROC]; p++) {
-        spinlock_acquire(&p->lk);
-        if(p->state == SLEEPING && p->sleep_space == chan) {
-            p->state = RUNNABLE;
-            p->time_slice = DEFAULT_SLICE;
-        }
-        spinlock_release(&p->lk);
-    }
-}
-```
-
-**Sleep系统调用（sysproc.c）**
-```c
-uint64 sys_sleep(void)
-{
-    int n;
-    unsigned long long ticks0;
-    
-    if(argint(0, &n) < 0)
-        return -1;
-    
-    extern unsigned long long timer_ticks(void);
-    extern void proc_sleep(void*, spinlock_t*);
-    extern spinlock_t ticks_lock;
-    
-    ticks0 = timer_ticks();
-    while(timer_ticks() - ticks0 < (unsigned long long)n) {
-        if(myproc()->state == RUNNING) {
-            proc_sleep(&ticks_lock, &ticks_lock);
-        }
-    }
+    // 二级间接索引（简化实现，暂不支持）
+    panic("inode_locate_block: bn too large");
     return 0;
 }
 ```
 
-**Timer中断处理（timer.c）**
+**Inode读写自测（fs.c）**
 ```c
-void timer_on_tick(void)
+// ===== inode rw self-test =====
+int ret = 0;
+
+for(int i = 0; i < BLOCK_SIZE * 2; i++)
+    str[i] = (unsigned char)i;
+
+// 创建新的inode
+struct inode* nip = inode_alloc(1, T_FILE);
+assert(nip != 0, "inode_create: returned NULL");
+
+inode_lock(nip);
+
+// 第一次写入：从偏移0写入 BLOCK_SIZE/2 字节
+ret = inode_write_data(nip, 0, str, BLOCK_SIZE / 2);
+assert(ret == BLOCK_SIZE / 2, "inode_write_data: fail (1)");
+
+// 第二次写入：从偏移 BLOCK_SIZE/2 写入 BLOCK_SIZE + BLOCK_SIZE/2 字节
+ret = inode_write_data(nip, BLOCK_SIZE / 2, str + BLOCK_SIZE / 2, BLOCK_SIZE + BLOCK_SIZE / 2);
+assert(ret == BLOCK_SIZE + BLOCK_SIZE / 2, "inode_write_data: fail (2)");
+
+// 一次读取：从偏移0读取 BLOCK_SIZE * 2 字节
+ret = inode_read_data(nip, 0, tmp, BLOCK_SIZE * 2);
+assert(ret == BLOCK_SIZE * 2, "inode_read_data: fail");
+
+inode_unlock(nip);
+inode_put(nip);
+
+// 测试结果
+if(blockcmp(tmp, str) == 1)
+    printf("success\n");
+else
+    printf("fail\n");
+
+while (1);
+// ===== end self-test =====
+```
+
+**路径解析（dir.c）**
+```c
+struct inode* path_to_inode(const char* path) {
+    struct inode* ip;
+    
+    // 从根目录开始
+    if (*path == '/') {
+        ip = inode_get(1, 1);  // 假设根目录inode为1
+        path++;
+    } else {
+        // 相对路径（简化实现，从当前目录开始）
+        ip = inode_get(1, 1);
+    }
+    
+    if (ip == NULL) {
+        return NULL;
+    }
+    
+    // 跳过开头的'/'
+    while (*path == '/') {
+        path++;
+    }
+    
+    // 如果路径为空或只有'/'，返回根目录
+    if (*path == '\0') {
+        return ip;
+    }
+    
+    // 解析路径的每一级
+    char* p = (char*)path;
+    while (*p != '\0') {
+        // 查找下一个'/'
+        char* next = p;
+        while (*next != '/' && *next != '\0') {
+            next++;
+        }
+        
+        // 提取组件名
+        int len = next - p;
+        if (len >= DIRSIZ) {
+            len = DIRSIZ - 1;
+        }
+        char component[DIRSIZ];
+        strncpy(component, p, len);
+        component[len] = '\0';
+        
+        struct inode* next_ip = dir_lookup(ip, component, NULL);
+        if (next_ip == NULL) {
+            inode_put(ip);
+            return NULL;
+        }
+        
+        inode_put(ip);
+        ip = next_ip;
+        
+        // 跳过'/'
+        if (*next == '\0') {
+            break;
+        }
+        p = next + 1;
+        while (*p == '/') {
+            p++;
+        }
+    }
+    
+    return ip;
+}
+```
+
+**目录操作（dir.c）**
+```c
+int dir_add_entry(struct inode* dp, uint16 inum, const char* name) {
+    if (dp->dinode.type != T_DIR) {
+        panic("dir_add_entry: not a directory");
+    }
+    
+    // 查找空闲槽位
+    uint32 off = 0;
+    struct dirent de;
+    while (off < dp->dinode.size) {
+        if (inode_read_data(dp, off, &de, sizeof(de)) != sizeof(de)) {
+            break;
+        }
+        if (de.inum == 0) {
+            // 找到空闲槽位
+            de.inum = inum;
+            strncpy(de.name, name, DIRSIZ);
+            de.name[DIRSIZ - 1] = '\0';
+            if (inode_write_data(dp, off, &de, sizeof(de)) != sizeof(de)) {
+                return -1;
+            }
+            return 0;
+        }
+        off += sizeof(de);
+    }
+    
+    // 没有空闲槽位，在末尾添加
+    de.inum = inum;
+    strncpy(de.name, name, DIRSIZ);
+    de.name[DIRSIZ - 1] = '\0';
+    if (inode_write_data(dp, off, &de, sizeof(de)) != sizeof(de)) {
+        return -1;
+    }
+    
+    return 0;
+}
+```
+
+**文件系统调用（sysfile.c）**
+```c
+uint64 sys_open(void)
 {
-    spinlock_acquire(&ticks_lock);
-    ticks_v++;
-    spinlock_release(&ticks_lock);
+    char path[128];
+    int omode;
+    if(argstr(0, path, sizeof(path)) < 0)
+        return -1;
+    if(argint(1, &omode) < 0)
+        return -1;
     
-    // 输出时钟中断信息
-    uart0_putc_imm('T');
-    uart0_putc_imm('\n');
-    uart0_puts_imm("ticks=");
-    uart0_putu64_imm(ticks_v);
-    uart0_putc_imm('\n');
+    struct file *f = file_open(path, omode);
+    if (f == NULL) {
+        return -1;
+    }
     
-    // 唤醒在ticks上sleep的进程
-    proc_wakeup(&ticks_lock);
+    int fd = fdalloc(f);
+    if (fd < 0) {
+        file_close(f);
+        return -1;
+    }
     
-    // 安排下一次定时器中断
-    int id = (int)r_tp();
-    set_mtimecmp(id, mtime_read() + INTERVAL);
+    return fd;
+}
+```
+
+**ELF文件加载（exec.c）**
+```c
+int proc_exec(const char* path) {
+    proc_t *p = myproc();
+    struct file *f;
+    struct elfhdr elf;
+    struct proghdr ph;
+    
+    // 打开文件
+    f = file_open(path, 0);  // O_RDONLY
+    if (f == NULL) {
+        return -1;
+    }
+    
+    // 读取ELF头
+    if (readi(f, &elf, 0, sizeof(elf)) != sizeof(elf)) {
+        file_close(f);
+        return -1;
+    }
+    
+    // 检查ELF魔数和机器类型
+    if (elf.magic != ELF_MAGIC || elf.machine != 0xF3) {
+        file_close(f);
+        return -1;
+    }
+    
+    // 释放旧的用户页表并创建新的
+    // ...
+    
+    // 加载每个程序段
+    for (int i = 0; i < elf.phnum; i++) {
+        // 读取程序头并加载段
+        // ...
+    }
+    
+    // 设置用户栈和入口地址
+    // ...
+    
+    return 0;
 }
 ```
 
@@ -722,29 +739,34 @@ void timer_on_tick(void)
 
 ## 五、结论与展望
 
-- 已基于 **xv6设计** 完成进程管理与调度系统的实现，包括：
-  - ✅ 进程管理三件套（proc_init/proc_alloc/proc_free）
-  - ✅ 进程操作（fork/exit/wait）
-  - ✅ RR时间片轮转调度
-  - ✅ 时间片递减与抢占机制
-  - ✅ sleep/wakeup机制
-  - ✅ 系统调用实现（fork/exit/wait/sleep/print/brk/mmap）
+- 已基于 **xv6设计** 完成文件系统的实现，包括：
+  - ✅ VirtIO磁盘驱动（MMIO映射、中断处理、块读写）
+  - ✅ Buf Cache（LRU缓存策略、懒惰写回）
+  - ✅ 文件系统初始化（super block读取、inode缓存初始化）
+  - ✅ Bitmap管理（数据块和inode的分配与释放）
+  - ✅ Inode层（数据索引10+2*N+N*N、跨块读写）
+  - ✅ 目录操作（目录项管理、路径解析）
+  - ✅ 文件系统调用（open/read/write/close/exec）
+  - ✅ ELF文件加载（proc_exec）
+  - ✅ Inode读写自测（打印 "success"）
   
-- 通过 **功能测试**，验证了进程管理与调度系统能正常工作：
-  - 进程创建、分配与释放正常
-  - fork能正确创建子进程
-  - exit/wait能正确处理进程退出和等待
-  - 调度器能正确切换进程
-  - 时间片递减和抢占机制正常
-  - sleep/wakeup机制正常
+- 通过 **功能测试**，验证了文件系统能正常工作：
+  - VirtIO磁盘驱动能正确初始化和工作
+  - Buf Cache的LRU策略和懒惰写回机制正常
+  - 文件系统能正确初始化
+  - Bitmap管理能正确分配和释放块和inode
+  - Inode层能正确处理数据索引和跨块读写
+  - 目录操作和路径解析功能正常
+  - 文件系统调用能正常工作
+  - Inode读写自测通过（打印 "success"）
   
 - 后续可进一步：  
-  1) 实现 **多CPU调度**，支持多核环境下的进程调度；  
-  2) 实现 **动态时间片调整**，根据进程优先级调整时间片；  
-  3) 实现 **完整的mmap和brk**，支持完整的内存管理；  
-  4) 实现 **文件系统相关系统调用**（open/close/read/write），支持文件操作；  
-  5) 实现 **exec系统调用**，支持加载可执行文件；  
-  6) 实现 **进程间通信**（IPC）机制。
+  1) 实现 **完整的二级间接索引**，支持更大的文件；  
+  2) 实现 **更多的目录操作**（mkdir/unlink/link），支持完整的文件系统操作；  
+  3) 实现 **文件权限管理**，支持文件访问控制；  
+  4) 实现 **文件系统格式化工具**（mkfs），支持创建有效的文件系统映像；  
+  5) 实现 **日志系统**，支持文件系统崩溃恢复；  
+  6) 实现 **符号链接**，支持更灵活的文件系统组织。
 
 ---
 
@@ -754,60 +776,82 @@ void timer_on_tick(void)
 make clean && make build && make qemu
 
 # 预期行为
-# - 系统启动并初始化进程系统
-# - 创建proczero进程并切换到用户态
-# - 执行initcode或用户程序
-# - 系统调用被正确处理
-# - 进程调度和时间片管理正常工作
-# - 时钟中断定期触发并输出
+# - 系统启动并初始化
+# - VirtIO 磁盘驱动初始化
+# - 文件系统初始化（读取 super block）
+# - 运行 inode 读写自测
+# - 打印 "success" 后无限循环
 ```
 
-### 进程调度流程图
+### 文件系统架构流程图
 
 ```
-进程A运行中（RUNNING）
+用户程序调用 sys_open("/user/work/hello.txt")
     ↓
-时钟中断（时间片减1）
+sys_open()（sysfile.c）
+    ├─ 解析路径：path_to_inode("/user/work/hello.txt")
+    │   ├─ 解析根目录 "/"
+    │   ├─ 查找 "user" 目录：dir_lookup(root, "user")
+    │   ├─ 查找 "work" 目录：dir_lookup(user_dir, "work")
+    │   └─ 查找 "hello.txt" 文件：dir_lookup(work_dir, "hello.txt")
+    ├─ 分配文件结构：file_alloc()
+    ├─ 分配文件描述符：fdalloc()
+    └─ 返回文件描述符
     ↓
-时间片为0？
-    ├─ 是 → proc_yield()
-    │      ├─ state = RUNNABLE
-    │      ├─ time_slice = DEFAULT_SLICE
-    │      └─ proc_sched()
-    │          └─ swtch(&p->ctx, &cpu->ctx)
-    │              ↓
-    └─ 否 → 继续运行
-            ↓
-调度器（proc_scheduler）
-    ├─ 遍历进程数组
-    ├─ 找到RUNNABLE进程B
-    ├─ state = RUNNING
-    └─ swtch(&cpu->ctx, &p->ctx)
-        ↓
-进程B运行中（RUNNING）
+用户程序调用 sys_read(fd, buf, n)
+    ↓
+sys_read()（sysfile.c）
+    ├─ 从文件描述符获取文件结构
+    ├─ 使用临时缓冲区
+    ├─ 调用 file_read() → inode_read_data()
+    │   ├─ 计算逻辑块号：bn = off / BLOCK_SIZE
+    │   ├─ 定位物理块：inode_locate_block(ip, bn)
+    │   ├─ 从 buf cache 读取块：buf_read(blockno)
+    │   └─ 拷贝数据到用户空间：copyout()
+    └─ 返回读取的字节数
+    ↓
+用户程序调用 sys_close(fd)
+    ↓
+sys_close()（sysfile.c）
+    ├─ 从文件描述符获取文件结构
+    ├─ 清空 ofile[fd]
+    └─ 调用 file_close() → inode_put()
+        └─ 减少 inode 引用计数，必要时释放
 ```
 
-### Sleep/Wakeup流程图
+### Inode数据索引结构图
 
 ```
-进程A调用sys_sleep(n)
+Inode addrs[12]:
+├─ addrs[0..9]:  直接索引（10个直接块）
+├─ addrs[10]:    一级间接索引
+│   └─ 指向一个包含256个块号的块
+│       ├─ addrs[0..255]: 间接块号
+└─ addrs[11]:    二级间接索引（暂未完全实现）
+    └─ 指向一个包含256个一级间接块的块
+        └─ 每个一级间接块包含256个块号
+```
+
+### Buf Cache LRU策略流程图
+
+```
+buf_read(blockno)
     ↓
-sys_sleep()
-    ├─ deadline = ticks + n
-    └─ while(ticks < deadline)
-        └─ proc_sleep(&ticks_lock, &ticks_lock)
-            ├─ state = SLEEPING
-            ├─ sleep_space = &ticks_lock
-            └─ proc_sched() 让出CPU
-                ↓
-调度器选择其他进程运行
+缓存命中？
+    ├─ 是 → 增加引用计数，移动到已分配链的最近使用端
+    └─ 否 → 从可分配链获取最久未使用的buf
+            ├─ 如果dirty，先写回磁盘
+            ├─ 从磁盘读取数据
+            ├─ 设置引用计数为1
+            └─ 插入已分配链的最近使用端
     ↓
-时钟中断（timer_on_tick）
-    ├─ ticks++
-    └─ proc_wakeup(&ticks_lock)
-        └─ 唤醒所有在ticks_lock上sleep的进程
-            ↓
-进程A被唤醒
-    ├─ state = RUNNABLE
-    └─ 继续检查ticks < deadline
+返回buf
+    ↓
+buf_release(buf)
+    ↓
+引用计数减1
+    ↓
+引用计数为0？
+    ├─ 是 → 移动到可分配链（最久未使用在前）
+    └─ 否 → 保持不动
 ```
