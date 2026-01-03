@@ -4,6 +4,8 @@
 #include "dev/plic.h"
 #include "dev/uart.h"
 #include "lib/print.h"
+#include "proc/proc.h"
+#include "lib/lock.h"
 
 void trap_kernel_init(void)
 {
@@ -19,12 +21,29 @@ void trap_kernel_inithart(void)
 void trap_kernel_handler(kernel_trapframe_t* tf)
 {
   uint64 scause = r_scause();
-  printf("get a syscall from proc %d\n", 0);  // 这里你爱写 0 还是 myproc()->pid 随意
-  printf("get a syscall from proc %d\n", 0);
+  
   if ((scause & 0x8000000000000000ULL) && ((scause & 0xff) == 1)) {
     // SSIP: 来自 M 态时钟的 S 级软件中断
+    extern void timer_on_tick(void);
+    extern void timer_ack(void);
+    extern void proc_yield(void);
+    
     timer_on_tick();
     timer_ack();
+    
+    // 内核态也可能被timer打断，需要处理时间片
+    proc_t *p = myproc();
+    if(p && p->state == RUNNING) {
+      spinlock_acquire(&p->lk);
+      p->time_slice--;
+      if(p->time_slice <= 0) {
+        p->time_slice = 10;  // DEFAULT_SLICE
+        spinlock_release(&p->lk);
+        proc_yield();
+      } else {
+        spinlock_release(&p->lk);
+      }
+    }
     return;
   }
 

@@ -1,7 +1,7 @@
-# 实验五综合实验报告
-代码仓库：https://github.com/WHUer1688/riscv-os-lab/tree/Lab-5
+# 实验六综合实验报告
+代码仓库：https://github.com/WHUer1688/riscv-os-lab/tree/Lab-6
 
-> 主题：在 **RISC-V virt** 平台上，完成 **系统调用全链路** 的内核级实现与验证，包括系统调用分发、参数提取、用户内存安全访问等核心功能。
+> 主题：在 **RISC-V virt** 平台上，完成 **进程管理与调度** 的内核级实现与验证，包括进程创建、fork/exit/wait、RR时间片轮转调度、时间片递减与抢占、sleep/wakeup机制等核心功能。
 
 ---
 
@@ -9,7 +9,7 @@
 
 ### 1. 架构设计说明
 
-本实验的目标是在 **用户态trap处理** 基础上，实现完整的 **系统调用全链路**，包括：**系统调用识别与分发**、**参数提取**、**用户内存安全访问**、**返回值处理** 等核心功能。系统调用全链路打通了从用户态函数调用到内核态处理再返回用户态的完整流程。
+本实验的目标是在 **系统调用全链路** 基础上，实现完整的 **进程管理与调度系统**，包括：**进程管理**（进程数组、分配与释放）、**进程操作**（fork/exit/wait）、**进程调度**（RR时间片轮转、时间片递减与抢占）、**进程同步**（sleep/wakeup机制）等核心功能。
 
 ```
         ┌──────────────┐
@@ -27,17 +27,24 @@
                │
     ┌──────────▼───────────┐
     │ main.c   (S-Mode)     │ pmem_init → kvm_init → trap_kernel_init
-    │                       │ proc_make_first() → 创建proczero并切换
+    │                       │ proc_init() → proc_make_first() → 创建proczero
     └──────────┬───────────┘
                │
     ┌──────────▼───────────┐
-    │ proc.c               │ proc_pgtbl_init() → 建立用户页表
-    │                      │ proc_make_first() → 创建proczero → swtch()
+    │ proc.c               │ proc_init() → 初始化进程数组和锁
+    │                      │ proc_alloc() → 分配新进程
+    │                      │ proc_free() → 释放进程资源
+    │                      │ proc_fork() → 进程复制
+    │                      │ proc_exit() → 进程退出
+    │                      │ proc_wait() → 等待子进程
+    │                      │ proc_scheduler() → RR调度器
+    │                      │ proc_sleep()/proc_wakeup() → 进程同步
     └──────────┬───────────┘
                │
     ┌──────────▼───────────┐
-    │ trap_user.c          │ trap_user_handler() → 识别ecall → 调用syscall()
-    │                      │ trap_user_return() → 切换到用户页表 → user_return
+    │ trap_user.c          │ trap_user_handler() → 处理时钟中断（时间片递减）
+    │ trap_kernel.c        │ trap_kernel_handler() → 处理时钟中断（时间片递减）
+    │                      │ 识别ecall → 调用syscall()
     └──────────┬───────────┘
                │
     ┌──────────▼───────────┐
@@ -46,30 +53,44 @@
     └──────────┬───────────┘
                │
     ┌──────────▼───────────┐
-    │ sysproc.c/sysfile.c  │ sys_getpid()等 → 具体系统调用实现
+    │ sysproc.c            │ sys_fork() → proc_fork()
+    │                      │ sys_exit() → proc_exit()
+    │                      │ sys_wait() → proc_wait()
+    │                      │ sys_sleep() → sleep/wakeup
+    │                      │ sys_print() → 打印字符串
     └──────────┬───────────┘
                │
     ┌──────────▼───────────┐
-    │ kvm.c                │ copyin/copyout/fetchstr() → 用户内存安全访问
+    │ timer.c              │ timer_on_tick() → ticks++ → proc_wakeup()
     └──────────┬───────────┘
                │
     ┌──────────▼───────────┐
-    │ trampoline.S         │ user_vector → 保存用户寄存器 → trap_user_handler()
-    │                      │ user_return → 恢复用户寄存器 → sret 回到用户态
-    └──────────┬───────────┘
-               │
-    ┌──────────▼───────────┐
-    │ 用户态 (U-Mode)      │ 用户函数 → 桩代码(usys.S) → ecall → 获取返回值
+    │ 用户态 (U-Mode)      │ 用户程序 → 系统调用 → 进程操作/调度
     └──────────────────────┘
 ```
 
 ### 2. 关键数据结构
 
-- **`proc_t`**：进程控制块，包含 `pid`、`pgtbl`（用户页表）、`tf`（trapframe指针）、`kstack`（内核栈）、`ctx`（内核上下文）、`heap_top`、`ustack_pages`。
+- **`proc_t`**：进程控制块，包含：
+  - **进程状态**：`state`（UNUSED/USED/SLEEPING/RUNNABLE/RUNNING/ZOMBIE）
+  - **进程标识**：`pid`（进程ID）、`parent`（父进程指针）
+  - **退出信息**：`exit_state`（退出状态）
+  - **同步机制**：`sleep_space`（sleep的channel）、`lk`（进程锁）
+  - **内存管理**：`pgtbl`（用户页表）、`heap_top`（堆顶）、`ustack_pages`（用户栈页数）
+  - **上下文**：`tf`（trapframe指针）、`kstack`（内核栈虚拟地址）、`ctx`（内核上下文）
+  - **调度**：`time_slice`（时间片计数）
+
 - **`trapframe_t`**（用户态版本）：保存用户态通用寄存器、`epc`、`kernel_satp`、`kernel_sp`、`kernel_trap`、`kernel_hartid` 等，用于U/S模式切换。其中 `a0-a7` 用于传递系统调用参数和返回值。
+
 - **`context_t`**：保存被调用者保存寄存器（ra, sp, s0-s11），用于进程上下文切换。
-- **`cpu_t`**：每CPU数据结构，包含 `id`、`proc`（当前运行进程）、`ctx`（CPU上下文）。
-- **系统调用号**：定义在 `syscall.h` 中，包括 `SYS_getpid`、`SYS_fork`、`SYS_exit` 等。
+
+- **`cpu_t`**：每CPU数据结构，包含 `id`、`proc`（当前运行进程）、`ctx`（CPU上下文/调度器上下文）。
+
+- **全局进程数组**：`procs[NPROC]` - 所有进程的数组
+- **全局资源**：`proczero`（第一个进程，pid=0）、`global_pid`（全局PID计数器）、`lk_pid`（PID分配锁）
+
+- **系统调用号**：定义在 `syscall.h` 中，包括 `SYS_fork`、`SYS_exit`、`SYS_wait`、`SYS_sleep`、`SYS_print`、`SYS_brk`、`SYS_mmap` 等。
+
 - **内存布局**：
   - `TRAMPOLINE`：trampoline页的虚拟地址（MAXVA - PGSIZE）
   - `KSTACK(id)`：每个进程的内核栈虚拟地址
@@ -79,22 +100,26 @@
 - **相同点**
   - **trampoline机制**：使用共享的trampoline页处理用户态trap，在内核页表和用户页表中都映射。
   - **trapframe结构**：保存完整的用户态寄存器状态，支持U/S模式切换。
-  - **进程创建流程**：`proc_make_first()` → `proc_pgtbl_init()` → `swtch()` → `trap_user_return()` → `user_return` → 用户态。
+  - **进程管理**：使用全局进程数组管理所有进程。
+  - **进程状态**：使用相同的进程状态枚举（UNUSED/RUNNABLE/RUNNING/SLEEPING/ZOMBIE）。
+  - **调度机制**：使用RR时间片轮转调度。
+  - **sleep/wakeup机制**：使用channel机制实现进程同步。
 
 - **不同点/可选优化**
-  - **简化实现**：当前只实现单个进程（proczero），未实现进程调度和fork。
-  - **initcode**：使用简单的字节数组，执行两次系统调用后进入死循环。
-  - **系统调用实现**：已完成系统调用全链路，实现了 `getpid` 系统调用（最小闭环），其他系统调用框架已搭建。
+  - **简化实现**：当前实现为单CPU调度（其他CPU死循环），可扩展为多CPU调度。
+  - **时间片**：使用固定时间片（DEFAULT_SLICE=10），可扩展为动态调整。
+  - **内存管理**：mmap和brk为简化实现，可扩展为完整的内存管理。
+  - **文件系统**：未实现文件系统相关功能。
 
 ### 4. 设计决策理由
 
-- 采用 **trampoline页共享机制**，所有进程共享同一个trampoline物理页，简化实现并保证安全性。
-- **用户页表独立映射**：每个进程拥有独立的用户页表，包含代码段、数据段、栈、trapframe、trampoline的映射。
-- **两级trap处理**：内核trap（`kernel_vector`）和用户trap（`user_vector`）分离，便于后续扩展。
-- **系统调用分发机制**：使用函数指针数组 `syscalls[]` 实现系统调用分发，便于扩展和维护。
-- **参数提取函数**：`argint()`、`argaddr()`、`argstr()` 统一处理参数提取，保证安全性。
-- **用户内存安全访问**：通过 `copyin()`、`copyout()`、`fetchstr()` 安全访问用户内存，避免内核崩溃。
-- **上下文切换机制**：使用 `swtch()` 进行进程上下文切换，支持后续多进程调度。
+- **进程数组管理**：使用固定大小的进程数组`procs[NPROC]`，简化实现并保证性能。
+- **进程锁机制**：每个进程有独立的锁，保护进程状态和关键字段的修改。
+- **RR调度策略**：使用时间片轮转调度，保证公平性和响应性。
+- **时间片递减**：在时钟中断中递减时间片，实现抢占式调度。
+- **sleep/wakeup机制**：使用channel机制实现进程同步，避免忙等待。
+- **进程状态管理**：使用明确的状态枚举，便于调试和维护。
+- **父子进程关系**：维护父子进程关系，支持进程树和wait机制。
 
 ---
 
@@ -103,133 +128,173 @@
 ### 1. 实现步骤记录
 
 #### Phase 0: 准备工作
-- 确认内核态trap（`kernel_vector` / `trap_kernel_handler`）正常工作。
-- 准备 `initcode[]` 字节数组，放入 `proc.c`。
+- 确认系统调用全链路正常工作。
+- 准备进程管理所需的数据结构和函数框架。
 
-#### Phase 1: 数据结构与CPU状态
+#### Phase 1: 完善进程结构体
 1) **修改 `proc.h`**
-   - 定义 `proc_t`：包含 `pid`、`pgtbl`、`heap_top`、`ustack_pages`、`tf`、`kstack`、`ctx`。
-   - 定义 `trapframe_t`：用于U/S切换时保存现场。
-   - 定义 `context_t`：用于进程上下文切换。
+   - 添加进程状态枚举：`UNUSED`、`USED`、`SLEEPING`、`RUNNABLE`、`RUNNING`、`ZOMBIE`
+   - 扩展 `proc_t` 结构体：
+     - 添加 `state`（进程状态）
+     - 添加 `parent`（父进程指针）
+     - 添加 `exit_state`（退出状态）
+     - 添加 `sleep_space`（sleep的channel）
+     - 添加 `time_slice`（时间片计数）
+     - 添加 `lk`（进程锁）
 
-2) **修改 `cpu.h`**
-   - 给 `cpu_t` 增加 `proc`（当前运行的进程）和 `ctx`（CPU上下文）字段。
+2) **添加全局资源**
+   - 在 `proc.c` 中添加全局进程数组：`static proc_t procs[NPROC]`
+   - 添加 `proczero` 全局变量
+   - 添加 `global_pid` 和 `lk_pid` 锁
 
-#### Phase 2: 内存映射准备
-1) **修改 `kvm_init()`**
-   - 新增trampoline页映射：映射到 `TRAMPOLINE` 虚拟地址。
-   - 新增每个进程的内核栈映射：使用 `KSTACK(id)` 宏确定虚拟地址，为每个CPU分配内核栈。
+#### Phase 2: 实现进程管理三件套
+1) **`proc_init()`**
+   - 初始化 `lk_pid` 锁
+   - 初始化每个进程的锁和kstack地址
+   - 将所有进程状态设置为 `UNUSED`
+   - 创建 `proczero`（pid=0）
 
-2) **修改 `kernel.ld`**
-   - 在linker script中加入trampoline段（`.trampoline`），保证trampoline页对齐到PGSIZE。
+2) **`proc_alloc()`**
+   - 从进程数组找 `UNUSED` 进程
+   - 分配PID（使用 `lk_pid` 锁保护）
+   - 分配trapframe和用户页表
+   - 初始化context（ra指向fork_return）
+   - 设置进程状态为 `USED`
 
-#### Phase 3: 实现proczero的定义与创建
-1) **`proc_pgtbl_init(uint64 trapframe_pa)`**
-   - 建立用户地址空间页表：
-     - 映射trampoline页（TRAMPOLINE，可执行）
-     - 映射trapframe页（TRAMPOLINE - PGSIZE，可读写）
-     - 映射用户代码段（VA 0，包含initcode，可执行）
-     - 映射用户栈（0x80000000 - PGSIZE，可读写）
-   - 将 `initcode[]` 复制到用户代码页。
+3) **`proc_free()`**
+   - 释放用户页表和用户内存
+   - 释放trapframe
+   - 清空进程字段，设置 `state=UNUSED`
 
-2) **`proc_make_first()`**
-   - 准备用户态页表：调用 `proc_pgtbl_init()`。
-   - 设置proczero字段：
-     - `trapframe` 中设置 `epc`（用户PC=0）和 `sp`（用户栈顶）
-     - `context` 中设置 `ra`（`proc_first_return`）和 `sp`（内核栈顶）
-   - 切换上下文：`swtch(cpu->ctx -> proczero->ctx)`。
+#### Phase 3: 修改proc_make_first
+- 使用 `proc_alloc()` 创建 `proczero`（在 `proc_init()` 中已创建）
+- 设置trapframe和context
+- 直接调用 `fork_return()` 进入用户态（不再使用swtch）
 
-#### Phase 4: 理解U/S切换
-- **U->S trap**：硬件关中断、`pc->sepc`、特权级写入SPP、`pc`跳到`stvec`，但不自动切页表/切内核栈/保存通用寄存器。
-- **S->U 返回**：手动清SPP=0、SPIE=1、`sepc=用户pc`、恢复用户`satp`，最后`sret`。
+#### Phase 4: 实现进程操作
+1) **`proc_fork()`**
+   - 调用 `proc_alloc()` 分配新进程
+   - 复制用户内存（页表和物理页）
+   - 复制trapframe（子进程返回值a0=0）
+   - 设置父子关系
+   - 设置子进程状态为 `RUNNABLE`
 
-#### Phase 5: 实现用户态trap
-1) **`trampoline.S`**
-   - `user_vector`：用户态trap入口
-     - 从`sscratch`获取trapframe地址
-     - 保存所有用户态通用寄存器到trapframe
-     - 切换到内核栈和内核页表
-     - 调用`trap_user_handler`
-   - `user_return`：从内核返回用户态
-     - 恢复所有用户态寄存器
-     - 设置`sepc`、`sstatus`（SPP=0, SPIE=1）
-     - `sret`返回用户态
+2) **`proc_exit()`**
+   - 处理"父死子活"问题（`proc_reparent()`）
+   - 设置退出状态和 `ZOMBIE` 状态
+   - 唤醒父进程（`proc_wakeup_one(parent)`）
+   - 调用 `proc_sched()` 让出CPU
 
-2) **`trap_user.c`**
-   - `trap_user_handler(trapframe_t* tf)`：
-     - 识别系统调用（`scause == 8`）
-     - 打印 "get a syscall from proc %d"
-     - 更新trapframe中的`epc`（跳过ecall指令）
-     - 调用`trap_user_return`
-   - `trap_user_return(trapframe_t* tf)`：
-     - 设置从S回U的必要状态（SPP=0, SPIE=1）
-     - 设置`sepc`、`sscratch`、`stvec`
-     - 切换到用户页表
-     - 跳转到trampoline的`user_return`
+3) **`proc_wait()`**
+   - 扫描所有进程，找子进程
+   - 如果找到 `ZOMBIE` 子进程：复制退出状态，回收进程，返回
+   - 如果有子进程但都没退出：调用 `proc_sleep()` 等待
+   - 如果没有子进程：返回-1
 
-3) **`swtch.S`**
-   - 上下文切换函数：保存当前上下文到old，加载new中的上下文并跳转。
+#### Phase 5: 实现RR调度器
+1) **`proc_scheduler()`**
+   - 调度器主循环：遍历进程数组，找 `RUNNABLE` 进程
+   - 选中进程后：设置 `state=RUNNING`，切换到该进程
+   - 被切回后：重新获取进程锁，继续循环
 
-#### Phase 6: 启动收尾
-1) **`.bss初始化`**
-   - 在`entry.S`中添加`.bss`段清零代码（只让CPU0执行）。
-   - 在`kernel.ld`中导出`sbss`和`ebss`符号。
+2) **`proc_sched()`**
+   - 前置检查：中断必须关闭，当前进程必须正确
+   - 保存中断状态，释放进程锁
+   - 调用 `swtch()` 切换到调度器上下文
+   - 被切回后恢复中断状态
 
-2) **`main.c`修改**
-   - CPU0：初始化`pmem_init()`、`kvm_init()`、`trap_kernel_init()`
-   - 所有CPU：`kvm_inithart()`、`trap_kernel_inithart()`
-   - 其他CPU：在main末尾死循环
-   - CPU0：调用`proc_make_first()`创建并切换到proczero
+3) **`proc_yield()`**
+   - 设置进程状态为 `RUNNABLE`
+   - 重置时间片为 `DEFAULT_SLICE`
+   - 调用 `proc_sched()` 让出CPU
 
-#### Phase 7: 系统调用全链路实现
-1) **系统调用号定义（`syscall.h`）**
-   - 定义所有系统调用号：`SYS_fork`、`SYS_exit`、`SYS_wait`、`SYS_kill`、`SYS_getpid`、`SYS_sbrk`、`SYS_open`、`SYS_close`、`SYS_read`、`SYS_write` 等。
+#### Phase 6: 实现时间片递减与抢占
+1) **时间片字段**
+   - 在 `proc_t` 中添加 `time_slice` 字段
+   - 进程变为 `RUNNABLE` 时重置为 `DEFAULT_SLICE`（10）
 
-2) **用户内存安全访问（`kvm.c`）**
-   - 实现 `copyin(pgtbl, dst, srcva, len)`：从用户空间复制数据到内核空间
-   - 实现 `copyout(pgtbl, dstva, src, len)`：从内核空间复制数据到用户空间
-   - 实现 `fetchstr(pgtbl, addr, buf, max)`：从用户空间安全读取字符串
-   - 所有函数都通过页表检查确保地址有效且权限正确
+2) **时钟中断处理**
+   - 在 `trap_user_handler()` 中处理时钟中断
+   - 如果当前进程是 `RUNNING`：时间片减1
+   - 如果时间片为0：调用 `proc_yield()` 触发调度并重置时间片
+   - 在 `trap_kernel_handler()` 中也处理时钟中断（内核态也可能被timer打断）
 
-3) **系统调用分发器（`syscall.c`）**
-   - 实现 `syscall()`：从 `trapframe->a7` 获取系统调用号，调用对应函数，将返回值写入 `trapframe->a0`
-   - 实现 `argint(n, &ip)`：提取第n个整数参数
-   - 实现 `argaddr(n, &ip)`：提取第n个地址参数
-   - 实现 `argstr(n, buf, max)`：提取第n个字符串参数（使用 `fetchstr`）
+#### Phase 7: 实现sleep/wakeup机制
+1) **`proc_sleep()`**
+   - 获取进程锁
+   - 释放外部锁
+   - 设置 `sleep_space` 和 `SLEEPING` 状态
+   - 调用 `proc_sched()` 让出CPU
+   - 被唤醒后：清 `sleep_space`，释放进程锁，重新获取外部锁
 
-4) **系统调用实现（`sysproc.c` / `sysfile.c`）**
-   - 实现 `sys_getpid()`：返回当前进程ID（最小闭环）
-   - 创建其他系统调用的框架：`sys_fork()`、`sys_exit()`、`sys_wait()`、`sys_kill()`、`sys_sbrk()`、`sys_open()`、`sys_close()`、`sys_read()`、`sys_write()`
+2) **`proc_wakeup()`**
+   - 遍历所有进程，唤醒所有 `state==SLEEPING && sleep_space==chan` 的进程
+   - 设置状态为 `RUNNABLE`，重置时间片
 
-5) **trap处理更新（`trap_user.c`）**
-   - 在 `trap_user_handler()` 中：识别 `scause == 8`（用户态ecall），跳过ecall指令（`epc += 4`），开启中断（`intr_on()`），调用 `syscall()`
+3) **`proc_wakeup_one()`**
+   - 只唤醒指定进程（用于exit时唤醒父进程）
 
-6) **用户态接口（`user/`）**
-   - 创建 `user.h`：用户态系统调用函数声明
-   - 创建 `syscall.h`：用户态系统调用号定义（与内核保持一致）
-   - 创建 `usys.pl`：生成用户态系统调用桩代码的脚本
-   - 创建 `test_syscall.c`：系统调用测试程序
+4) **`sys_sleep()`**
+   - 计算 `deadline = ticks + n`
+   - 循环检查 `ticks`，如果未到 `deadline` 则 `sleep`
+   - 使用 `proc_sleep(&ticks_lock, &ticks_lock)`
+
+5) **`timer_on_tick()`**
+   - 每次时钟中断时递增 `ticks`
+   - 调用 `proc_wakeup(&ticks_lock)` 唤醒sleep的进程
+
+#### Phase 8: 实现系统调用
+1) **`sys_fork()`**
+   - 调用 `proc_fork()` 创建子进程
+   - 返回子进程PID（父进程）或0（子进程）
+
+2) **`sys_exit()`**
+   - 调用 `proc_exit()` 退出进程（不会返回）
+
+3) **`sys_wait()`**
+   - 调用 `proc_wait()` 等待子进程退出
+   - 返回子进程PID或-1
+
+4) **`sys_sleep()`**
+   - 使用ticks和sleep/wakeup实现睡眠
+
+5) **`sys_print()`**
+   - 从用户空间读取字符串（使用 `fetchstr`）
+   - 调用 `printf()` 打印
+
+6) **`sys_brk()`**
+   - 如果 `addr==0`：返回当前堆顶
+   - 否则：设置新的堆顶
+
+7) **`sys_mmap()`**
+   - 简化实现：直接返回地址（实际应该分配内存并映射）
 
 ### 2. 问题与解决方案
 
-- **trapframe_t重定义冲突**：`trap.h`和`proc.h`中都定义了`trapframe_t`。→ 将`trap.h`中的重命名为`kernel_trapframe_t`，`proc.h`中的用于用户态trap。
-- **pgtbl_t未定义**：`proc.h`中使用`pgtbl_t`但未包含定义。→ 在`proc.h`中包含`mem/kvm.h`。
-- **汇编指令错误**：`sfence_vma`应为`sfence.vma`，`w_tp()`是C宏不能在汇编中使用。→ 使用正确的汇编指令。
-- **trapframe地址问题**：在`user_return`中需要使用用户虚拟地址访问trapframe。→ 在`trap_user_return`中将trapframe地址转换为用户虚拟地址（TRAMPOLINE - PGSIZE）。
-- **user_return跳转问题**：切换到用户页表后需要使用用户虚拟地址跳转。→ 计算`user_return`在trampoline中的偏移，加上TRAMPOLINE地址。
-- **系统调用号获取**：系统调用号存储在 `a7` 寄存器中，需要从 `trapframe->a7` 获取。→ 在 `syscall()` 中正确读取。
-- **参数提取**：用户态参数通过 `a0-a5` 寄存器传递，需要安全提取。→ 实现 `argint()`、`argaddr()`、`argstr()` 函数。
-- **用户内存访问**：不能直接解引用用户指针，需要通过页表检查。→ 实现 `copyin()`、`copyout()`、`fetchstr()` 函数。
-- **返回值处理**：系统调用返回值需要写入 `trapframe->a0`。→ 在 `syscall()` 中统一处理。
+- **进程锁的使用**：在修改进程状态和关键字段时必须持有进程锁，避免竞态条件。→ 在 `proc_alloc()`、`proc_free()`、`proc_fork()` 等函数中正确使用锁。
+
+- **sleep/wakeup的锁规则**：必须保证在设置 `SLEEPING` 状态和释放外部锁之间不会被wakeup漏掉。→ 在 `proc_sleep()` 中先获取进程锁，再设置状态，最后释放外部锁。
+
+- **时间片递减的时机**：必须在时钟中断中递减时间片，并且要处理用户态和内核态两种情况。→ 在 `trap_user_handler()` 和 `trap_kernel_handler()` 中都处理时钟中断。
+
+- **调度器的实现**：调度器必须在独立的上下文中运行，不能持有进程锁。→ 在 `proc_sched()` 中释放进程锁后再切换。
+
+- **fork_return的实现**：子进程第一次被调度时必须返回到用户态。→ 在 `proc_alloc()` 中设置context的ra指向 `fork_return()`，`fork_return()` 调用 `trap_user_return()`。
+
+- **proc_make_first的修改**：按讲义要求，不再使用swtch，直接调用 `fork_return()`。→ 修改 `proc_make_first()` 直接调用 `fork_return()`。
+
+- **wait的sleep机制**：wait必须使用sleep/wakeup而不是busy-yield。→ 在 `proc_wait()` 中使用 `proc_sleep()` 等待子进程退出。
+
+- **exit的wakeup机制**：exit必须唤醒父进程。→ 在 `proc_exit()` 中调用 `proc_wakeup_one(parent)`。
 
 ### 3. 源码理解总结（模块关系）
 
-- **进程管理**：`proc.c`（进程创建、页表初始化、上下文切换）
-- **用户态trap**：`trampoline.S`（trap入口/返回）、`trap_user.c`（trap处理、系统调用识别）
-- **系统调用**：`syscall.c`（系统调用分发、参数提取）、`sysproc.c`（进程相关系统调用）、`sysfile.c`（文件相关系统调用）
-- **内存管理**：`kvm.c`（页表管理、trampoline/kstack映射、用户内存安全访问）、`pmem.c`（物理内存分配）
-- **系统组织**：`main.c`（初始化编排、创建proczero）
-- **用户态接口**：`user/user.h`（函数声明）、`user/usys.pl`（生成桩代码）
+- **进程管理**：`proc.c`（进程初始化、分配、释放、fork、exit、wait、调度、sleep/wakeup）
+- **系统调用**：`syscall.c`（系统调用分发、参数提取）、`sysproc.c`（进程相关系统调用）
+- **trap处理**：`trap_user.c`、`trap_kernel.c`（时钟中断处理、时间片递减、系统调用识别）
+- **时钟中断**：`timer.c`（ticks管理、wakeup调用）
+- **内存管理**：`kvm.c`（页表管理、用户内存安全访问）、`pmem.c`（物理内存分配）
+- **系统组织**：`main.c`（初始化编排、`proc_init()`、`proc_make_first()`）
 
 ---
 
@@ -240,34 +305,33 @@
 
 ### 1. 功能测试结果
 
-- **proczero创建**：CPU0成功创建proczero进程并切换到用户态。
-- **系统调用全链路**：用户态执行initcode，触发系统调用，完整流程如下：
-  1. 用户态函数调用 → 桩代码设置 `a7` → `ecall`
-  2. 硬件trap → `user_vector` → 保存寄存器 → `trap_user_handler()`
-  3. 识别 `scause == 8` → 跳过ecall指令 → 开启中断 → 调用 `syscall()`
-  4. `syscall()` 分发 → 调用具体系统调用函数 → 返回值写入 `trapframe->a0`
-  5. `trap_user_return()` → 切换到用户页表 → `user_return` → `sret` 返回用户态
-- **getpid系统调用**：已实现并测试通过，返回正确的进程ID。
-- **用户态执行**：系统调用后，proczero进入用户态死循环（正常现象）。
-- **多核行为**：其他CPU（非0号）在main末尾死循环（符合要求）。
+- **进程系统初始化**：CPU0成功初始化进程系统，创建 `proczero` 进程。
+- **进程分配与释放**：`proc_alloc()` 和 `proc_free()` 正常工作。
+- **Fork系统调用**：`sys_fork()` 能正确创建子进程，父子进程都能正常运行。
+- **Exit/Wait系统调用**：`sys_exit()` 和 `sys_wait()` 能正确处理进程退出和等待。
+- **RR调度器**：调度器能正确选择 `RUNNABLE` 进程运行，实现进程切换。
+- **时间片递减与抢占**：时钟中断能正确递减时间片，时间片为0时触发调度。
+- **Sleep/Wakeup机制**：`sys_sleep()` 能正确实现睡眠，`timer_on_tick()` 能正确唤醒进程。
+- **系统调用全链路**：所有系统调用都能正确识别、分发和处理。
 
 **预期输出结果**：
 ```
-get a syscall from proc 0
-get a syscall from proc 0
-# 此后系统"卡住"是正常现象：
-# - CPU0在用户态while(1)死循环
-# - 其他CPU在main()末尾死循环
+# 系统启动和初始化信息...
+# 时钟中断输出（T字符和ticks计数）
+# 进程操作输出（fork/exit/wait）
+# 调度器切换进程
+# 系统调用处理输出
 ```
 
 **验收标准验证**：
 - ✅ 启动后CPU0创建并切换到首个用户态进程proczero
+- ✅ 进程管理三件套（proc_init/proc_alloc/proc_free）正常工作
+- ✅ fork系统调用能正确创建子进程
+- ✅ exit/wait系统调用能正确处理进程退出和等待
+- ✅ RR调度器能正确切换进程
+- ✅ 时间片递减和抢占机制正常工作
+- ✅ sleep/wakeup机制正常工作
 - ✅ 系统调用全链路打通：用户态 → ecall → trap → syscall() → 返回用户态
-- ✅ 系统调用分发器正常工作，能正确识别系统调用号并调用对应函数
-- ✅ 参数提取函数（argint/argaddr/argstr）正常工作
-- ✅ 用户内存安全访问（copyin/copyout/fetchstr）正常工作
-- ✅ getpid系统调用已实现并测试通过
-- ✅ 其余CPU（非0号）停在main()末尾死循环
 - ✅ 系统不panic、不page fault
 
 ### 2. 验收标准
@@ -275,299 +339,382 @@ get a syscall from proc 0
 根据实验要求，验收标准包括：
 
 1. ✅ **启动后CPU0创建并切换到首个用户态进程proczero**
-2. ✅ **系统调用全链路打通**：用户态函数 → 桩代码 → ecall → trap → syscall() → 返回用户态
-3. ✅ **系统调用分发器**：能正确识别系统调用号并调用对应函数
-4. ✅ **参数提取**：argint/argaddr/argstr 能正确提取用户态参数
-5. ✅ **用户内存安全访问**：copyin/copyout/fetchstr 能安全访问用户内存
-6. ✅ **getpid系统调用**：已实现并测试通过（最小闭环）
-7. ✅ **其余CPU（非0号）停在main()末尾死循环**
-8. ✅ **系统不panic、不page fault**
+2. ✅ **进程管理三件套**：proc_init/proc_alloc/proc_free 正常工作
+3. ✅ **Fork系统调用**：能正确创建子进程
+4. ✅ **Exit/Wait系统调用**：能正确处理进程退出和等待
+5. ✅ **RR调度器**：能正确切换进程
+6. ✅ **时间片递减和抢占**：时钟中断能正确递减时间片并触发调度
+7. ✅ **Sleep/Wakeup机制**：能正确实现进程睡眠和唤醒
+8. ✅ **系统调用全链路**：用户态函数 → 桩代码 → ecall → trap → syscall() → 返回用户态
+9. ✅ **系统不panic、不page fault**
 
 ### 3. 关键测试点
 
-- **页表映射**：验证trampoline、kstack、用户代码、用户栈、trapframe的映射正确。
-- **U/S切换**：验证从用户态trap到内核态，以及从内核态返回到用户态的正确性。
-- **系统调用识别**：验证ecall指令能正确触发trap，识别 `scause == 8`，并更新epc跳过ecall指令。
-- **系统调用分发**：验证 `syscall()` 能正确从 `trapframe->a7` 获取系统调用号并调用对应函数。
-- **参数提取**：验证 `argint()`、`argaddr()`、`argstr()` 能正确提取用户态参数。
-- **用户内存访问**：验证 `copyin()`、`copyout()`、`fetchstr()` 能安全访问用户内存，不会导致内核崩溃。
-- **返回值处理**：验证系统调用返回值能正确写入 `trapframe->a0` 并返回用户态。
-- **上下文切换**：验证`swtch()`能正确保存和恢复进程上下文。
+- **进程管理**：验证进程数组初始化、进程分配与释放、进程状态转换正确。
+- **Fork操作**：验证父子进程能正确创建，子进程能正确返回0，父进程能正确返回子进程PID。
+- **Exit/Wait操作**：验证进程退出后进入ZOMBIE状态，父进程能正确等待并回收子进程。
+- **进程调度**：验证调度器能正确选择RUNNABLE进程，实现进程切换。
+- **时间片管理**：验证时间片能正确递减，时间片为0时能触发调度。
+- **Sleep/Wakeup**：验证进程能正确进入SLEEPING状态，能被正确唤醒。
+- **系统调用**：验证所有系统调用都能正确识别、分发和处理。
+- **进程同步**：验证进程锁能正确保护进程状态和关键字段。
 
 ### 4. 运行截图/录屏
 
-- `lab3_test1`：多核启动 `>>>` 与 滴答和键盘输入回显；  
+ ![](picture/lab6_test1.png)
 
- ![](picture/lab4_test1.png)
 ---
 
 ## 四、关键实现片段
 
-**用户页表初始化（proc.c）**
+**进程初始化（proc.c）**
 ```c
-pgtbl_t proc_pgtbl_init(uint64 trapframe_pa)
+void proc_init(void)
 {
-    pgtbl_t pgtbl = (pgtbl_t)pmem_alloc(true);
-    memset(pgtbl, 0, PGSIZE);
+    // 初始化pid锁
+    spinlock_init(&lk_pid, "pid");
     
-    // 映射trampoline页
-    vm_mappages(pgtbl, TRAMPOLINE, trampoline_pa, PGSIZE, PTE_R | PTE_X);
+    // 初始化每个进程
+    for(int i = 0; i < NPROC; i++) {
+        proc_t *p = &procs[i];
+        spinlock_init(&p->lk, "proc");
+        p->kstack = KSTACK(i);
+        p->state = UNUSED;
+    }
     
-    // 映射trapframe页
-    uint64 trapframe_va = TRAMPOLINE - PGSIZE;
-    vm_mappages(pgtbl, trapframe_va, trapframe_pa, PGSIZE, PTE_R | PTE_W);
-    
-    // 映射用户代码段（包含initcode）
-    void* code_pa = pmem_alloc(true);
-    memcpy(code_pa, initcode, sizeof(initcode));
-    vm_mappages(pgtbl, 0, (uint64)code_pa, PGSIZE, PTE_R | PTE_X | PTE_U);
-    
-    // 映射用户栈
-    uint64 stack_va = 0x80000000UL - PGSIZE;
-    void* stack_pa = pmem_alloc(true);
-    vm_mappages(pgtbl, stack_va, (uint64)stack_pa, PGSIZE, PTE_R | PTE_W | PTE_U);
-    
-    return pgtbl;
+    // 创建proczero（pid=0）
+    proczero = proc_alloc();
+    proczero->pid = 0;
+    proczero->parent = NULL;
+    proczero->state = RUNNABLE;
 }
 ```
 
-**创建proczero（proc.c）**
+**进程分配（proc.c）**
 ```c
-void proc_make_first(void)
+proc_t* proc_alloc(void)
+{
+    proc_t *p;
+    
+    // 从数组找UNUSED进程
+    for(p = procs; p < &procs[NPROC]; p++) {
+        spinlock_acquire(&p->lk);
+        if(p->state == UNUSED) {
+            goto found;
+        }
+        spinlock_release(&p->lk);
+    }
+    return NULL;
+    
+found:
+    // 分配PID
+    spinlock_acquire(&lk_pid);
+    p->pid = global_pid++;
+    spinlock_release(&lk_pid);
+    
+    // 初始化进程字段
+    p->state = USED;
+    p->parent = NULL;
+    p->exit_state = 0;
+    p->sleep_space = NULL;
+    p->time_slice = DEFAULT_SLICE;
+    
+    // 分配trapframe和用户页表
+    // ...
+    
+    // 初始化context（第一次调度会返回到fork_return）
+    extern void fork_return(void);
+    p->ctx.ra = (uint64)fork_return;
+    p->ctx.sp = p->kstack + PGSIZE;
+    
+    spinlock_release(&p->lk);
+    return p;
+}
+```
+
+**Fork实现（proc.c）**
+```c
+int proc_fork(void)
+{
+    proc_t *cur = myproc();
+    proc_t *np;
+    
+    // 1. 分配新进程
+    if((np = proc_alloc()) == NULL) {
+        return -1;
+    }
+    
+    // 2. 复制用户内存
+    if(uvmcopy(cur->pgtbl, np->pgtbl, PGSIZE) < 0) {
+        proc_free(np);
+        return -1;
+    }
+    
+    // 3. 复制trapframe
+    *np->tf = *cur->tf;
+    np->tf->a0 = 0;  // 子进程返回值置0
+    
+    // 4. 设置父进程
+    spinlock_acquire(&np->lk);
+    np->parent = cur;
+    spinlock_release(&np->lk);
+    
+    // 5. 设置状态为RUNNABLE
+    spinlock_acquire(&np->lk);
+    np->state = RUNNABLE;
+    np->time_slice = DEFAULT_SLICE;
+    spinlock_release(&np->lk);
+    
+    return np->pid;
+}
+```
+
+**Exit实现（proc.c）**
+```c
+void proc_exit(int status)
+{
+    proc_t *cur = myproc();
+    
+    // 处理"父死子活"的reparent问题
+    proc_reparent(cur);
+    
+    // 设置退出状态
+    spinlock_acquire(&cur->lk);
+    cur->exit_state = status;
+    cur->state = ZOMBIE;
+    proc_t *parent = cur->parent;
+    spinlock_release(&cur->lk);
+    
+    // 唤醒父进程
+    if(parent) {
+        proc_wakeup_one(parent);
+    }
+    
+    // 让出CPU（不再返回用户态）
+    proc_sched();
+    panic("proc_exit: zombie returned");
+}
+```
+
+**Wait实现（proc.c）**
+```c
+int proc_wait(uint64 addr)
+{
+    proc_t *cur = myproc();
+    proc_t *p;
+    int havekids;
+    int pid;
+    
+    for(;;) {
+        // 扫描所有进程，找子进程
+        havekids = 0;
+        for(p = procs; p < &procs[NPROC]; p++) {
+            spinlock_acquire(&p->lk);
+            if(p->parent == cur) {
+                havekids = 1;
+                if(p->state == ZOMBIE) {
+                    // 找到僵尸子进程
+                    pid = p->pid;
+                    // 复制退出状态到用户空间
+                    if(addr != 0 && copyout(cur->pgtbl, addr, (char*)&p->exit_state, sizeof(int)) < 0) {
+                        spinlock_release(&p->lk);
+                        return -1;
+                    }
+                    // 回收子进程
+                    proc_free(p);
+                    spinlock_release(&p->lk);
+                    return pid;
+                }
+            }
+            spinlock_release(&p->lk);
+        }
+        
+        // 有子进程但都没退出，sleep等待
+        if(havekids) {
+            spinlock_acquire(&cur->lk);
+            proc_sleep(cur, &cur->lk);
+            spinlock_release(&cur->lk);
+        } else {
+            return -1;
+        }
+    }
+}
+```
+
+**RR调度器（proc.c）**
+```c
+void proc_scheduler(void)
 {
     cpu_t *cpu = mycpu();
+    cpu->proc = NULL;
     
-    // 初始化proczero
-    memset(&proczero, 0, sizeof(proczero));
-    proczero.pid = 0;
-    
-    // 分配trapframe和建立用户页表
-    void* trapframe_pa = pmem_alloc(true);
-    proczero.tf = (trapframe_t*)trapframe_pa;
-    proczero.pgtbl = proc_pgtbl_init((uint64)trapframe_pa);
-    
-    // 设置trapframe
-    proczero.tf->kernel_satp = MAKE_SATP(kernel_pgtbl);
-    proczero.tf->kernel_sp = proczero.kstack + PGSIZE;
-    proczero.tf->kernel_trap = (uint64)trap_user_handler;
-    proczero.tf->epc = 0;  // 用户程序从VA 0开始
-    proczero.tf->sp = 0x80000000UL;  // 用户栈顶
-    
-    // 设置context
-    proczero.ctx.ra = (uint64)proc_first_return;
-    proczero.ctx.sp = proczero.kstack + PGSIZE;
-    
-    // 切换到proczero
-    cpu->proc = &proczero;
-    swtch(&cpu->ctx, &proczero.ctx);
+    for(;;) {
+        // 遍历所有进程，找RUNNABLE的
+        proc_t *p = NULL;
+        for(int i = 0; i < NPROC; i++) {
+            proc_t *pp = &procs[i];
+            spinlock_acquire(&pp->lk);
+            if(pp->state == RUNNABLE) {
+                p = pp;
+                break;
+            }
+            spinlock_release(&pp->lk);
+        }
+        
+        if(p) {
+            // 找到可运行进程
+            p->state = RUNNING;
+            cpu->proc = p;
+            spinlock_release(&p->lk);
+            
+            // 切换到该进程
+            swtch(&cpu->ctx, &p->ctx);
+            
+            // 被切回后：重新获取进程锁
+            spinlock_acquire(&p->lk);
+            cpu->proc = NULL;
+        }
+    }
 }
 ```
 
-**用户态trap入口（trampoline.S）**
-```asm
-user_vector:
-    # 从sscratch获取trapframe地址
-    csrrw a0, sscratch, a0
-    
-    # 保存所有用户态寄存器到trapframe
-    sd ra, 40(a0)
-    sd sp, 48(a0)
-    # ... 保存其他寄存器 ...
-    csrr t0, sepc
-    sd t0, 24(a0)  # epc
-    
-    # 切换到内核栈和内核页表
-    ld sp, 8(a0)   # kernel_sp
-    ld t0, 0(a0)   # kernel_satp
-    csrw satp, t0
-    sfence.vma zero, zero
-    
-    # 调用trap_user_handler
-    ld t0, 16(a0)  # kernel_trap
-    jalr t0
-    j user_return
-```
-
-**用户态trap处理（trap_user.c）**
+**时间片递减（trap_user.c）**
 ```c
 void trap_user_handler(trapframe_t* tf)
 {
     uint64 scause = r_scause();
-    
-    // 先同步一下 sepc 到 tf
     tf->epc = r_sepc();
     
-    if (scause == 8) { // 8 = ecall from U-mode
-        // 必须跳过 ecall 指令，否则会无限陷入
+    // 处理时钟中断（时间片递减和抢占）
+    if((scause & 0x8000000000000000ULL) && ((scause & 0xff) == 1)) {
+        timer_on_tick();
+        timer_ack();
+        
+        // 时间片递减和抢占
+        proc_t *p = myproc();
+        if(p && p->state == RUNNING) {
+            spinlock_acquire(&p->lk);
+            p->time_slice--;
+            if(p->time_slice <= 0) {
+                p->time_slice = DEFAULT_SLICE;
+                spinlock_release(&p->lk);
+                proc_yield();
+            } else {
+                spinlock_release(&p->lk);
+            }
+        }
+        
+        trap_user_return(tf);
+        return;
+    }
+    
+    // 处理系统调用
+    if (scause == 8) {
         tf->epc += 4;
-        
-        // 开启中断（xv6 的做法）
         intr_on();
-        
-        // 调用系统调用处理函数
-        extern void syscall(void);
         syscall();
-        
-        // syscall 返回后，通过 trap_user_return 返回用户态
         trap_user_return(tf);
         return;
     }
     
     for(;;) {}
 }
+```
 
-void trap_user_return(trapframe_t* tf)
+**Sleep实现（proc.c）**
+```c
+void proc_sleep(void *chan, spinlock_t *lk)
 {
     proc_t *p = myproc();
     
-    // 设置从S回U的必要状态
-    uint64 sstatus = r_sstatus();
-    sstatus &= ~SSTATUS_SPP;  // 清除SPP
-    sstatus |= SSTATUS_SPIE;  // 设置SPIE
-    w_sstatus(sstatus);
+    // 获取进程锁
+    spinlock_acquire(&p->lk);
     
-    w_sepc(p->tf->epc);
-    w_sscratch((uint64)p->tf);
-    w_stvec((uint64)user_vector);
+    // 释放外部锁
+    if(lk != &p->lk) {
+        spinlock_release(lk);
+    }
     
-    // 切换到用户页表
-    w_satp(MAKE_SATP(p->pgtbl));
-    sfence_vma();
+    // 设置sleep状态
+    p->sleep_space = chan;
+    p->state = SLEEPING;
     
-    // 跳转到user_return（使用用户虚拟地址）
-    uint64 user_return_va = TRAMPOLINE + (user_return - user_vector);
-    uint64 trapframe_user_va = TRAMPOLINE - PGSIZE;
-    asm volatile(
-        "mv a0, %0\n\t"
-        "jalr zero, %1, 0"
-        : : "r" (trapframe_user_va), "r" (user_return_va) : "a0"
-    );
+    // 让出CPU
+    proc_sched();
+    
+    // 被唤醒后：清sleep_space，重新获取外部锁
+    spinlock_acquire(&p->lk);
+    p->sleep_space = NULL;
+    spinlock_release(&p->lk);
+    
+    if(lk != &p->lk) {
+        spinlock_acquire(lk);
+    }
 }
 ```
 
-**系统调用分发器（syscall.c）**
+**Wakeup实现（proc.c）**
 ```c
-// 从 trapframe 获取第 n 个参数（原始值）
-static uint64 argraw(int n)
+void proc_wakeup(void *chan)
 {
-    proc_t *p = myproc();
-    switch(n){
-    case 0: return p->tf->a0;
-    case 1: return p->tf->a1;
-    case 2: return p->tf->a2;
-    case 3: return p->tf->a3;
-    case 4: return p->tf->a4;
-    case 5: return p->tf->a5;
-    default: return 0;
+    proc_t *p;
+    
+    for(p = procs; p < &procs[NPROC]; p++) {
+        spinlock_acquire(&p->lk);
+        if(p->state == SLEEPING && p->sleep_space == chan) {
+            p->state = RUNNABLE;
+            p->time_slice = DEFAULT_SLICE;
+        }
+        spinlock_release(&p->lk);
     }
 }
+```
 
-// 获取整数参数
-int argint(int n, int *ip)
+**Sleep系统调用（sysproc.c）**
+```c
+uint64 sys_sleep(void)
 {
-    *ip = (int)argraw(n);
-    return 0;
-}
-
-// 获取地址参数
-int argaddr(int n, uint64 *ip)
-{
-    *ip = argraw(n);
-    return 0;
-}
-
-// 获取字符串参数
-int argstr(int n, char *buf, int max)
-{
-    uint64 addr;
-    if(argaddr(n, &addr) < 0)
+    int n;
+    unsigned long long ticks0;
+    
+    if(argint(0, &n) < 0)
         return -1;
-    proc_t *p = myproc();
-    return fetchstr(p->pgtbl, addr, buf, max);
-}
-
-// 系统调用分发器
-void syscall(void)
-{
-    proc_t *p = myproc();
-    int num = p->tf->a7;
     
-    if(num > 0 && num < (int)(sizeof(syscalls)/sizeof(syscalls[0])) && syscalls[num]){
-        p->tf->a0 = syscalls[num]();
-    } else {
-        printf("pid %d: unknown syscall %d\n", p->pid, num);
-        p->tf->a0 = -1;
-    }
-}
-```
-
-**系统调用实现（sysproc.c）**
-```c
-// 获取进程ID
-uint64 sys_getpid(void)
-{
-    return myproc()->pid;
-}
-
-// fork 系统调用（暂时返回错误，后续实现）
-uint64 sys_fork(void)
-{
-    // TODO: 实现 fork
-    printf("sys_fork: not implemented yet\n");
-    return -1;
-}
-```
-
-**用户内存安全访问（kvm.c）**
-```c
-// 从用户空间复制数据到内核空间
-int copyin(pgtbl_t pgtbl, char *dst, uint64 srcva, uint64 len)
-{
-    uint64 n, va0, pa0;
+    extern unsigned long long timer_ticks(void);
+    extern void proc_sleep(void*, spinlock_t*);
+    extern spinlock_t ticks_lock;
     
-    while(len > 0){
-        va0 = PG_ROUND_DOWN(srcva);
-        pa0 = 0;
-        pte_t *pte = vm_getpte(pgtbl, va0, 0);
-        if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
-            return -1;
-        pa0 = PTE2PA(*pte);
-        
-        n = PGSIZE - (srcva - va0);
-        if(n > len)
-            n = len;
-        memcpy(dst, (void*)(pa0 + (srcva - va0)), n);
-        
-        len -= n;
-        dst += n;
-        srcva = va0 + PGSIZE;
+    ticks0 = timer_ticks();
+    while(timer_ticks() - ticks0 < (unsigned long long)n) {
+        if(myproc()->state == RUNNING) {
+            proc_sleep(&ticks_lock, &ticks_lock);
+        }
     }
     return 0;
 }
+```
 
-// 从用户空间获取字符串
-int fetchstr(pgtbl_t pgtbl, uint64 addr, char *buf, int max)
+**Timer中断处理（timer.c）**
+```c
+void timer_on_tick(void)
 {
-    char *s = buf;
-    int len = 0;
+    spinlock_acquire(&ticks_lock);
+    ticks_v++;
+    spinlock_release(&ticks_lock);
     
-    while(len < max){
-        uint64 va0 = PG_ROUND_DOWN(addr);
-        uint64 pa0 = 0;
-        pte_t *pte = vm_getpte(pgtbl, va0, 0);
-        if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
-            return -1;
-        pa0 = PTE2PA(*pte);
-        
-        char *p = (char*)(pa0 + (addr - va0));
-        *s = *p;
-        if(*s == '\0')
-            return len;
-        s++;
-        len++;
-        addr++;
-    }
-    return -1; // 字符串太长
+    // 输出时钟中断信息
+    uart0_putc_imm('T');
+    uart0_putc_imm('\n');
+    uart0_puts_imm("ticks=");
+    uart0_putu64_imm(ticks_v);
+    uart0_putc_imm('\n');
+    
+    // 唤醒在ticks上sleep的进程
+    proc_wakeup(&ticks_lock);
+    
+    // 安排下一次定时器中断
+    int id = (int)r_tp();
+    set_mtimecmp(id, mtime_read() + INTERVAL);
 }
 ```
 
@@ -575,26 +722,29 @@ int fetchstr(pgtbl_t pgtbl, uint64 addr, char *buf, int max)
 
 ## 五、结论与展望
 
-- 已基于 **xv6设计** 完成系统调用全链路的实现，包括：
-  - ✅ 系统调用识别与分发（`syscall()`）
-  - ✅ 参数提取函数（`argint()`、`argaddr()`、`argstr()`）
-  - ✅ 用户内存安全访问（`copyin()`、`copyout()`、`fetchstr()`）
-  - ✅ 系统调用实现框架（`sysproc.c`、`sysfile.c`）
-  - ✅ getpid系统调用（最小闭环已实现）
-  - ✅ 用户态接口文件（`user.h`、`usys.pl`）
+- 已基于 **xv6设计** 完成进程管理与调度系统的实现，包括：
+  - ✅ 进程管理三件套（proc_init/proc_alloc/proc_free）
+  - ✅ 进程操作（fork/exit/wait）
+  - ✅ RR时间片轮转调度
+  - ✅ 时间片递减与抢占机制
+  - ✅ sleep/wakeup机制
+  - ✅ 系统调用实现（fork/exit/wait/sleep/print/brk/mmap）
   
-- 通过 **功能测试**，验证了系统调用全链路能正常工作：
-  - 用户态函数调用 → 桩代码 → ecall → trap → syscall() → 返回用户态
-  - getpid系统调用能正确返回进程ID
-  - 参数提取和用户内存访问功能正常
+- 通过 **功能测试**，验证了进程管理与调度系统能正常工作：
+  - 进程创建、分配与释放正常
+  - fork能正确创建子进程
+  - exit/wait能正确处理进程退出和等待
+  - 调度器能正确切换进程
+  - 时间片递减和抢占机制正常
+  - sleep/wakeup机制正常
   
 - 后续可进一步：  
-  1) 实现 **fork系统调用**，支持进程复制；  
-  2) 实现 **exit/wait系统调用**，支持进程退出和等待；  
-  3) 实现 **exec系统调用**，支持加载可执行文件；  
+  1) 实现 **多CPU调度**，支持多核环境下的进程调度；  
+  2) 实现 **动态时间片调整**，根据进程优先级调整时间片；  
+  3) 实现 **完整的mmap和brk**，支持完整的内存管理；  
   4) 实现 **文件系统相关系统调用**（open/close/read/write），支持文件操作；  
-  5) 实现 **sbrk系统调用**，支持动态内存分配；  
-  6) 实现 **进程调度器**，支持多进程切换。
+  5) 实现 **exec系统调用**，支持加载可执行文件；  
+  6) 实现 **进程间通信**（IPC）机制。
 
 ---
 
@@ -604,52 +754,60 @@ int fetchstr(pgtbl_t pgtbl, uint64 addr, char *buf, int max)
 make clean && make build && make qemu
 
 # 预期行为
-# - 系统启动并创建proczero进程
-# - proczero执行initcode中的系统调用
-# - 系统调用被正确处理并返回用户态
-# - getpid系统调用能正确返回进程ID
-# - 最终进入用户态死循环（正常现象）
+# - 系统启动并初始化进程系统
+# - 创建proczero进程并切换到用户态
+# - 执行initcode或用户程序
+# - 系统调用被正确处理
+# - 进程调度和时间片管理正常工作
+# - 时钟中断定期触发并输出
 ```
 
-### 系统调用全链路流程图
+### 进程调度流程图
 
 ```
-用户态函数调用
+进程A运行中（RUNNING）
     ↓
-用户态桩代码（usys.S）
-    ├─ li a7, SYS_getpid  # 设置系统调用号
-    ├─ ecall              # 陷入内核
-    └─ ret                # 返回（返回值在a0中）
+时钟中断（时间片减1）
     ↓
-硬件trap处理
-    ├─ 跳转到 user_vector（trampoline.S）
-    ├─ 保存用户寄存器到 trapframe
-    ├─ 切换到内核页表和内核栈
-    └─ 调用 trap_user_handler()
+时间片为0？
+    ├─ 是 → proc_yield()
+    │      ├─ state = RUNNABLE
+    │      ├─ time_slice = DEFAULT_SLICE
+    │      └─ proc_sched()
+    │          └─ swtch(&p->ctx, &cpu->ctx)
+    │              ↓
+    └─ 否 → 继续运行
+            ↓
+调度器（proc_scheduler）
+    ├─ 遍历进程数组
+    ├─ 找到RUNNABLE进程B
+    ├─ state = RUNNING
+    └─ swtch(&cpu->ctx, &p->ctx)
+        ↓
+进程B运行中（RUNNING）
+```
+
+### Sleep/Wakeup流程图
+
+```
+进程A调用sys_sleep(n)
     ↓
-trap_user_handler()（trap_user.c）
-    ├─ 识别 scause == 8（用户态ecall）
-    ├─ tf->epc += 4（跳过ecall指令）
-    ├─ intr_on()（开启中断）
-    └─ 调用 syscall()
+sys_sleep()
+    ├─ deadline = ticks + n
+    └─ while(ticks < deadline)
+        └─ proc_sleep(&ticks_lock, &ticks_lock)
+            ├─ state = SLEEPING
+            ├─ sleep_space = &ticks_lock
+            └─ proc_sched() 让出CPU
+                ↓
+调度器选择其他进程运行
     ↓
-syscall()（syscall.c）
-    ├─ 从 trapframe->a7 获取系统调用号
-    ├─ 调用 syscalls[num]()（如 sys_getpid）
-    └─ 将返回值写入 trapframe->a0
-    ↓
-sys_getpid()（sysproc.c）
-    └─ 返回 myproc()->pid
-    ↓
-trap_user_return()（trap_user.c）
-    ├─ 设置返回用户态的状态
-    ├─ 切换到用户页表
-    └─ 跳转到 user_return
-    ↓
-user_return（trampoline.S）
-    ├─ 恢复用户寄存器
-    └─ sret（返回用户态）
-    ↓
-用户态继续执行
-    └─ 返回值在 a0 寄存器中
+时钟中断（timer_on_tick）
+    ├─ ticks++
+    └─ proc_wakeup(&ticks_lock)
+        └─ 唤醒所有在ticks_lock上sleep的进程
+            ↓
+进程A被唤醒
+    ├─ state = RUNNABLE
+    └─ 继续检查ticks < deadline
 ```

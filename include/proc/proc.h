@@ -4,6 +4,17 @@
 #include "common.h"
 #include "mem/pmem.h" // 需要页表定义
 #include "mem/kvm.h"  // 需要pgtbl_t定义
+#include "lib/lock.h" // 需要 spinlock_t
+
+// 进程状态枚举
+enum proc_state {
+    UNUSED = 0,
+    USED,
+    SLEEPING,
+    RUNNABLE,
+    RUNNING,
+    ZOMBIE
+};
 
 // [cite: 57, 63] 上下文结构体，用于进程切换
 // 保存被调用者保存寄存器(callee-saved registers)
@@ -68,14 +79,24 @@ typedef struct trapframe {
 
 // [cite: 36-51] 进程控制块定义
 typedef struct proc {
-    int pid;
-    uint64 ustack_pages; // 用户栈占用的页面数量
+    // 需要持锁修改的字段
+    enum proc_state state;    // 进程状态
+    int pid;                  // 进程ID
+    struct proc *parent;      // 父进程指针
+    int exit_state;           // 退出状态
+    void *sleep_space;        // sleep 的 channel
     
-    pgtbl_t pgtbl;       // 用户态页表 [cite: 44]
-    uint64 heap_top;     // 用户堆顶 [cite: 45]
-    trapframe_t* tf;     // 切换时的暂存空间 [cite: 46]
-    uint64 kstack;       // 内核栈的虚拟地址 [cite: 47]
-    context_t ctx;       // 内核态进程上下文 [cite: 49]
+    // 其他字段
+    uint64 ustack_pages;      // 用户栈占用的页面数量
+    pgtbl_t pgtbl;            // 用户态页表 [cite: 44]
+    uint64 heap_top;          // 用户堆顶 [cite: 45]
+    trapframe_t* tf;           // 切换时的暂存空间 [cite: 46]
+    uint64 kstack;            // 内核栈的虚拟地址 [cite: 47]
+    context_t ctx;            // 内核态进程上下文 [cite: 49]
+    int time_slice;           // 时间片计数
+    
+    // 锁
+    spinlock_t lk;            // 进程锁
 } proc_t;
 
 // 进程管理函数
@@ -83,5 +104,29 @@ proc_t* myproc(void);
 pgtbl_t proc_pgtbl_init(uint64 trapframe_pa);
 void proc_make_first(void);
 void swtch(context_t *old, context_t *new);
+
+// 进程初始化和管理
+void proc_init(void);
+proc_t* proc_alloc(void);
+void proc_free(proc_t *p);
+
+// 进程操作
+int proc_fork(void);
+void proc_exit(int status);
+int proc_wait(uint64 addr);
+void proc_reparent(proc_t *p);
+
+// sleep/wakeup
+void proc_sleep(void *chan, spinlock_t *lk);
+void proc_wakeup_one(proc_t *p);
+void proc_wakeup(void *chan);
+
+// 调度
+void proc_yield(void);
+void proc_sched(void);
+void proc_scheduler(void);
+
+// fork_return
+void fork_return(void);
 
 #endif

@@ -21,6 +21,7 @@ typedef enum {false = 0, true = 1} bool;
 #endif
 
 #define NCPU 3
+#define NPROC 64  // 最大进程数
 
 // 页大小定义
 #define PGSIZE 4096

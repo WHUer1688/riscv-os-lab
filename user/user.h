@@ -19,5 +19,8 @@ int write(int, const void*, int);
 // 内存相关
 void* sbrk(int);
 
+// 其他
+int print(const char*);
+
 #endif // __USER_H__
 

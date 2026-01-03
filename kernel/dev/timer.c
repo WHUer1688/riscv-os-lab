@@ -1,5 +1,7 @@
 #include "dev/timer.h"
 #include "riscv.h"
+#include "lib/lock.h"
+#include "proc/proc.h"
 
 // ---- CLINT ----
 #define CLINT_MTIMECMP(h) (0x02004000UL + 8*(h))
@@ -28,6 +30,7 @@ static void uart0_putu64_imm(unsigned long long x) {
 #endif
 
 static volatile unsigned long long ticks_v = 0;
+spinlock_t ticks_lock;
 
 static inline unsigned long long mtime_read(void) {
   return *(volatile unsigned long long*)CLINT_MTIME;
@@ -40,6 +43,7 @@ static inline void set_mtimecmp(int hart, unsigned long long when) {
 void timer_init(void) {
   int id = (int)r_tp();
   set_mtimecmp(id, mtime_read() + INTERVAL);
+  spinlock_init(&ticks_lock, "ticks");
 }
 
 void timer_inithart(void) { timer_init(); }
@@ -51,7 +55,9 @@ unsigned long long timer_ticks(void) { return ticks_v; }
 // —— 核心：每次时钟滴答都直接打印 ——
 // （满足：1. 输出 'T'；2. 打印 ticks；3. 重装下一次定时）
 void timer_on_tick(void) {
+  spinlock_acquire(&ticks_lock);
   ticks_v++;
+  spinlock_release(&ticks_lock);
 
   // 1) 时钟滴答测试：输出 'T' 字符
   uart0_putc_imm('T');
@@ -61,6 +67,10 @@ void timer_on_tick(void) {
   uart0_puts_imm("ticks=");
   uart0_putu64_imm(ticks_v);
   uart0_putc_imm('\n');
+
+  // 唤醒在ticks上sleep的进程
+  extern void proc_wakeup(void*);
+  proc_wakeup(&ticks_lock);
 
   // 3) 安排下一次定时器中断
   int id = (int)r_tp();

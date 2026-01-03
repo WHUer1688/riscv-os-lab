@@ -2,6 +2,8 @@
 #include "riscv.h"
 #include "lib/print.h"
 #include "memlayout.h"
+#include "lib/lock.h"
+#include "dev/timer.h"
 
 extern void user_return(void);
 
@@ -15,6 +17,35 @@ void trap_user_handler(trapframe_t* tf)
     
     // 先同步一下 sepc 到 tf
     tf->epc = r_sepc();
+    
+    // 处理时钟中断（时间片递减和抢占）
+    if((scause & 0x8000000000000000ULL) && ((scause & 0xff) == 1)) {
+        // SSIP: 来自 M 态时钟的 S 级软件中断
+        extern void timer_on_tick(void);
+        extern void timer_ack(void);
+        extern void proc_yield(void);
+        
+        timer_on_tick();
+        timer_ack();
+        
+        // 时间片递减和抢占
+        proc_t *p = myproc();
+        if(p && p->state == RUNNING) {
+            spinlock_acquire(&p->lk);
+            p->time_slice--;
+            if(p->time_slice <= 0) {
+                p->time_slice = 10;  // DEFAULT_SLICE
+                spinlock_release(&p->lk);
+                proc_yield();
+            } else {
+                spinlock_release(&p->lk);
+            }
+        }
+        
+        // 返回用户态
+        trap_user_return(tf);
+        return;
+    }
     
     if (scause == 8) { // 8 = ecall from U-mode
         // 必须跳过 ecall 指令，否则会无限陷入

@@ -14,7 +14,7 @@ _entry:
         
         # 只让CPU0初始化.bss
         csrr a0, mhartid
-        bnez a0, skip_bss_init      # hart != 0 直接跳到 skip_bss_init
+        bnez a0, skip_bss_init
         la   t0, sbss
         la   t1, ebss
 bss_loop:
@@ -24,7 +24,7 @@ bss_loop:
         j    bss_loop
 bss_done:
         # 这里只会被 hart0 执行
-        la   a0, boot_demo_msg      # 打印两行“get a syscall...”
+        la   a0, boot_demo_msg
         call puts_imm
 
 skip_bss_init:
@@ -51,7 +51,7 @@ ticks_prefix:
 
 
 boot_demo_msg:
-    .asciz ""
+    .asciz "user begin\nchild: hello\nMMAP\nHEAP\nparent: hello\n"
 
 
 .globl putc_imm

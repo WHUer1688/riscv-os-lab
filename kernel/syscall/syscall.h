@@ -23,6 +23,9 @@
 #define SYS_link   19
 #define SYS_mkdir  20
 #define SYS_close  21
+#define SYS_print  22
+#define SYS_mmap   23
+#define SYS_brk    24
 
 #endif // __SYSCALL_H__
 

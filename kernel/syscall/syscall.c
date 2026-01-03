@@ -12,6 +12,10 @@ extern uint64 sys_wait(void);
 extern uint64 sys_kill(void);
 extern uint64 sys_getpid(void);
 extern uint64 sys_sbrk(void);
+extern uint64 sys_sleep(void);
+extern uint64 sys_print(void);
+extern uint64 sys_mmap(void);
+extern uint64 sys_brk(void);
 
 extern uint64 sys_open(void);
 extern uint64 sys_close(void);
@@ -26,6 +30,10 @@ static uint64 (*syscalls[])(void) = {
     [SYS_kill]   sys_kill,
     [SYS_getpid] sys_getpid,
     [SYS_sbrk]   sys_sbrk,
+    [SYS_sleep]  sys_sleep,
+    [SYS_print]  sys_print,
+    [SYS_mmap]   sys_mmap,
+    [SYS_brk]    sys_brk,
     [SYS_open]   sys_open,
     [SYS_close]  sys_close,
     [SYS_read]   sys_read,

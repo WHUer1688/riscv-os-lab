@@ -58,6 +58,9 @@ int main(void) {
     kvm_inithart();
     trap_kernel_inithart();
     
+    // 初始化进程系统
+    proc_init();
+    
     // 关键：创建并切到用户态 proczero
     proc_make_first();
     
